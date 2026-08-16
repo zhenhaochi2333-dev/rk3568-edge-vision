@@ -414,9 +414,6 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
     SignalGuard signal_guard;
     PerfMonitor monitor;
     cv::Mat frame;
-    cv::Mat timing_image;
-    cv::Mat output_frame;
-    cv::Mat preview_frame;
     std::size_t processed = 0U;
     int consecutive_read_failures = 0;
     const auto wall_start = Clock::now();
@@ -469,7 +466,7 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
         const double before_draw_s =
             std::chrono::duration<double>(visualization_start - wall_start).count();
         metrics.fps = before_draw_s > 0.0 ? static_cast<double>(processed + 1U) / before_draw_s : 0.0;
-        frame.copyTo(timing_image);
+        cv::Mat timing_image = frame.clone();
         visualizer.draw(timing_image, result.detections, metrics, OverlayMode::Video);
         const auto visualization_end = Clock::now();
         metrics.visualization_ms =
@@ -477,7 +474,7 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
         metrics.end_to_end_ms =
             std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
 
-        frame.copyTo(output_frame);
+        cv::Mat output_frame = frame.clone();
         const auto output_visualization_start = Clock::now();
         visualizer.draw(output_frame, result.detections, metrics, OverlayMode::Video);
         const double output_visualization_ms =
@@ -499,6 +496,7 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
         double display_ms = 0.0;
         if (preview) {
             try {
+                cv::Mat preview_frame;
                 cv::resize(output_frame, preview_frame,
                            cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
                            cv::INTER_AREA);
