@@ -45,7 +45,8 @@ void draw_panel(cv::Mat& image, const FrameMetrics& metrics, OverlayMode mode, d
     const int margin = std::max(8, static_cast<int>(12.0 * scale));
     const int panel_width = std::min(image.cols - 2 * margin, std::max(230, static_cast<int>(286.0 * scale)));
     const int line_height = std::max(15, static_cast<int>(20.0 * scale));
-    const int panel_lines = mode == OverlayMode::Video ? 6 : 5;
+    const bool smooth_video = mode == OverlayMode::SmoothVideo;
+    const int panel_lines = smooth_video ? 7 : (mode == OverlayMode::Video ? 6 : 5);
     const int panel_height = std::min(image.rows - 2 * margin,
                                       std::max(line_height * panel_lines + margin * 2,
                                                static_cast<int>(126.0 * scale)));
@@ -72,22 +73,55 @@ void draw_panel(cv::Mat& image, const FrameMetrics& metrics, OverlayMode mode, d
                 thickness, cv::LINE_AA);
     y += line_height;
 
-    std::ostringstream inference;
-    inference << "Inference  " << milliseconds(metrics.inference_ms);
-    cv::putText(image, inference.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
-                font * 0.84, primary, thickness, cv::LINE_AA);
-    y += line_height;
+    if (smooth_video) {
+        std::ostringstream display_fps;
+        display_fps << "Display     " << std::fixed << std::setprecision(1)
+                    << metrics.display_fps;
+        cv::putText(image, display_fps.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+        y += line_height;
 
-    std::ostringstream end_to_end;
-    end_to_end << "E2E         " << milliseconds(metrics.end_to_end_ms);
-    cv::putText(image, end_to_end.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
-                font * 0.84, primary, thickness, cv::LINE_AA);
-    y += line_height;
+        std::ostringstream detection_fps;
+        detection_fps << "Detection   " << std::fixed << std::setprecision(1)
+                      << metrics.detection_fps;
+        cv::putText(image, detection_fps.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+        y += line_height;
 
-    std::ostringstream objects;
-    objects << "Objects     " << object_count(metrics.object_count);
-    cv::putText(image, objects.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
-                font * 0.84, primary, thickness, cv::LINE_AA);
+        std::ostringstream inference;
+        inference << "Inference   " << milliseconds(metrics.inference_ms);
+        cv::putText(image, inference.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+        y += line_height;
+
+        std::ostringstream ai_latency;
+        ai_latency << "AI Latency  " << milliseconds(metrics.ai_latency_ms);
+        cv::putText(image, ai_latency.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+        y += line_height;
+
+        std::ostringstream objects;
+        objects << "Objects     " << object_count(metrics.object_count);
+        cv::putText(image, objects.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+    } else {
+        std::ostringstream inference;
+        inference << "Inference  " << milliseconds(metrics.inference_ms);
+        cv::putText(image, inference.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+        y += line_height;
+
+        std::ostringstream end_to_end;
+        end_to_end << "E2E         " << milliseconds(metrics.end_to_end_ms);
+        cv::putText(image, end_to_end.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+        y += line_height;
+
+        std::ostringstream objects;
+        objects << "Objects     " << object_count(metrics.object_count);
+        cv::putText(image, objects.str(), cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+                    font * 0.84, primary, thickness, cv::LINE_AA);
+    }
     if (mode == OverlayMode::Video) {
         y += line_height;
         std::ostringstream fps;

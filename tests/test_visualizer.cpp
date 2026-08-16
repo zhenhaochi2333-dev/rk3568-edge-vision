@@ -30,4 +30,10 @@ void run_visualizer_tests()
     cv::Mat empty(32, 32, CV_8UC3, cv::Scalar(1, 2, 3));
     visualizer.draw(empty, {}, metrics, edgevision::OverlayMode::Video);
     assert(empty.cols == 32 && empty.rows == 32);
+
+    metrics.display_fps = 28.0;
+    metrics.detection_fps = 7.5;
+    metrics.ai_latency_ms = 70.0;
+    visualizer.draw(empty, {}, metrics, edgevision::OverlayMode::SmoothVideo);
+    assert(empty.cols == 32 && empty.rows == 32);
 }

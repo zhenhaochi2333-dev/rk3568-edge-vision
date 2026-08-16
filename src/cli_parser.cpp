@@ -71,6 +71,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
             result.options.show = true;
         } else if (option == "--fullscreen") {
             result.options.fullscreen = true;
+        } else if (option == "--smooth-preview") {
+            result.options.smooth_preview = true;
         } else if (option == "--force") {
             result.options.force = true;
         } else {
@@ -109,6 +111,15 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.fullscreen && !result.options.show) {
         throw std::runtime_error("--fullscreen requires --show");
     }
+    if (result.options.smooth_preview && result.options.camera_path.empty()) {
+        throw std::runtime_error("--smooth-preview requires --camera");
+    }
+    if (result.options.smooth_preview && !result.options.show) {
+        throw std::runtime_error("--smooth-preview requires --show");
+    }
+    if (result.options.smooth_preview && !result.options.output_path.empty()) {
+        throw std::runtime_error("--smooth-preview does not support --output");
+    }
     return result;
 }
 
@@ -117,7 +128,7 @@ const char* CliParser::usage()
     return "Usage: edge_vision --model MODEL --labels LABELS "
            "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
-           "[--force] [--help]";
+           "[--smooth-preview] [--force] [--help]";
 }
 
 }  // namespace edgevision

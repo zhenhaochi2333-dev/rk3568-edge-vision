@@ -22,12 +22,17 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace edgevision {
@@ -69,6 +74,15 @@ void validate_options(const AppOptions& options)
     }
     if (options.fullscreen && !options.show) {
         throw std::runtime_error("--fullscreen requires --show");
+    }
+    if (options.smooth_preview && options.camera_path.empty()) {
+        throw std::runtime_error("--smooth-preview requires --camera");
+    }
+    if (options.smooth_preview && !options.show) {
+        throw std::runtime_error("--smooth-preview requires --show");
+    }
+    if (options.smooth_preview && !options.output_path.empty()) {
+        throw std::runtime_error("--smooth-preview does not support --output");
     }
     if (!options.output_path.empty() && !camera_mode &&
         real_path_if_possible(options.input_path) == real_path_if_possible(options.output_path)) {
@@ -258,6 +272,164 @@ private:
     void (*previous_)(int) = SIG_DFL;
 };
 
+struct SmoothDetectionSnapshot {
+    std::uint64_t generation = 0U;
+    std::uint64_t source_frame_id = 0U;
+    std::vector<Detection> detections;
+    FrameMetrics metrics;
+    Clock::time_point captured_at{};
+    Clock::time_point finished_at{};
+};
+
+class SmoothAiWorker {
+public:
+    explicit SmoothAiWorker(Yolov5Detector& detector)
+        : detector_(detector), worker_(&SmoothAiWorker::run, this)
+    {
+    }
+
+    ~SmoothAiWorker()
+    {
+        request_stop();
+        join();
+    }
+
+    SmoothAiWorker(const SmoothAiWorker&) = delete;
+    SmoothAiWorker& operator=(const SmoothAiWorker&) = delete;
+
+    bool submit(const cv::Mat& frame, std::uint64_t source_frame_id,
+                Clock::time_point captured_at)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_requested_ || busy_ || pending_) {
+                return false;
+            }
+        }
+
+        cv::Mat frame_copy = frame.clone();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stop_requested_ || busy_ || pending_) {
+            return false;
+        }
+        pending_frame_ = std::move(frame_copy);
+        pending_source_frame_id_ = source_frame_id;
+        pending_captured_at_ = captured_at;
+        pending_ = true;
+        condition_.notify_one();
+        return true;
+    }
+
+    bool copy_latest(SmoothDetectionSnapshot& snapshot) const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (latest_.generation == 0U) {
+            return false;
+        }
+        snapshot = latest_;
+        return true;
+    }
+
+    bool failed(std::string& message) const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!failed_) {
+            return false;
+        }
+        message = error_message_;
+        return true;
+    }
+
+    void request_stop()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_requested_ = true;
+            pending_frame_.release();
+            pending_ = false;
+        }
+        condition_.notify_all();
+    }
+
+    void join()
+    {
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+private:
+    void run()
+    {
+        for (;;) {
+            cv::Mat frame;
+            std::uint64_t source_frame_id = 0U;
+            Clock::time_point captured_at{};
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this] { return stop_requested_ || pending_; });
+                if (stop_requested_ && !pending_) {
+                    return;
+                }
+                frame = std::move(pending_frame_);
+                source_frame_id = pending_source_frame_id_;
+                captured_at = pending_captured_at_;
+                pending_ = false;
+                busy_ = true;
+            }
+
+            try {
+                const Clock::time_point ai_start = Clock::now();
+                const DetectionResult result = detector_.detect_with_metrics(frame);
+                const Clock::time_point finished_at = Clock::now();
+                FrameMetrics metrics = result.metrics;
+                metrics.object_count = static_cast<double>(result.detections.size());
+                metrics.ai_latency_ms =
+                    std::chrono::duration<double, std::milli>(finished_at - ai_start).count();
+
+                std::lock_guard<std::mutex> lock(mutex_);
+                latest_.generation += 1U;
+                latest_.source_frame_id = source_frame_id;
+                latest_.detections = result.detections;
+                latest_.metrics = metrics;
+                latest_.captured_at = captured_at;
+                latest_.finished_at = finished_at;
+                busy_ = false;
+            } catch (const std::exception& error) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                failed_ = true;
+                error_message_ = error.what();
+                busy_ = false;
+                stop_requested_ = true;
+                condition_.notify_all();
+                return;
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                failed_ = true;
+                error_message_ = "smooth-preview AI worker failed with an unknown exception";
+                busy_ = false;
+                stop_requested_ = true;
+                condition_.notify_all();
+                return;
+            }
+        }
+    }
+
+    Yolov5Detector& detector_;
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::thread worker_;
+    cv::Mat pending_frame_;
+    std::uint64_t pending_source_frame_id_ = 0U;
+    Clock::time_point pending_captured_at{};
+    SmoothDetectionSnapshot latest_;
+    bool pending_ = false;
+    bool busy_ = false;
+    bool stop_requested_ = false;
+    bool failed_ = false;
+    std::string error_message_;
+};
+
 void verify_video_output(const VideoWriterInfo& info)
 {
     cv::VideoCapture verification(info.actual_path);
@@ -271,6 +443,191 @@ void verify_video_output(const VideoWriterInfo& info)
     if (frame.size() != info.resolution) {
         throw std::runtime_error("written video resolution differs from requested resolution");
     }
+}
+
+int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
+                      const Visualizer& visualizer)
+{
+    if (!gui_available()) {
+        throw std::runtime_error("smooth-preview requires a usable X11 display");
+    }
+
+    CameraSource camera(options.camera_path);
+    camera.open();
+    const CameraSourceInfo& source = camera.info();
+    log_info("smooth camera device=" + camera.device() + " backend=" + source.backend +
+             " resolution=" + std::to_string(source.width) + "x" +
+             std::to_string(source.height) + " fps=" + std::to_string(source.fps));
+    log_info("smooth camera pipeline=" + camera.pipeline());
+
+    bool window_ready = false;
+    try {
+        configure_display_window(kCameraPreviewWidth, kCameraPreviewHeight, options.fullscreen);
+        window_ready = true;
+    } catch (const cv::Exception& error) {
+        camera.release();
+        throw std::runtime_error(std::string("smooth-preview window setup failed: ") + error.what());
+    }
+
+    SignalGuard signal_guard;
+    SmoothAiWorker worker(detector);
+    cv::Mat frame;
+    std::vector<Detection> latest_detections;
+    FrameMetrics latest_metrics;
+    Clock::time_point latest_result_finished{};
+    std::uint64_t frame_id = 0U;
+    std::uint64_t last_generation = 0U;
+    std::size_t displayed_frames = 0U;
+    std::size_t submitted_frames = 0U;
+    std::size_t skipped_frames = 0U;
+    std::size_t completed_inferences = 0U;
+    std::size_t consecutive_read_failures = 0U;
+    std::size_t result_age_samples = 0U;
+    double result_age_sum_ms = 0.0;
+    double result_age_max_ms = 0.0;
+    std::string error_message;
+    const auto wall_start = Clock::now();
+
+    const auto cleanup = [&] {
+        worker.request_stop();
+        worker.join();
+        camera.release();
+        if (window_ready) {
+            cv::destroyAllWindows();
+        }
+    };
+
+    try {
+        while (!g_stop_requested) {
+            if (worker.failed(error_message)) {
+                throw std::runtime_error("smooth-preview AI worker failed: " + error_message);
+            }
+            if (!camera.read(frame)) {
+                ++consecutive_read_failures;
+                if (displayed_frames == 0U) {
+                    throw std::runtime_error("smooth-preview failed to read the first camera frame");
+                }
+                if (consecutive_read_failures >= 5U) {
+                    throw std::runtime_error("smooth-preview camera read failed for 5 consecutive frames");
+                }
+                continue;
+            }
+            consecutive_read_failures = 0U;
+            if (frame.cols != 1280 || frame.rows != 720 || frame.type() != CV_8UC3) {
+                throw std::runtime_error("smooth-preview camera frame must be 1280x720 BGR CV_8UC3");
+            }
+
+            ++frame_id;
+            const Clock::time_point captured_at = Clock::now();
+            SmoothDetectionSnapshot snapshot;
+            if (worker.copy_latest(snapshot) && snapshot.generation != last_generation) {
+                completed_inferences +=
+                    static_cast<std::size_t>(snapshot.generation - last_generation);
+                last_generation = snapshot.generation;
+                latest_detections = std::move(snapshot.detections);
+                latest_metrics = snapshot.metrics;
+                latest_result_finished = snapshot.finished_at;
+            }
+            if (worker.failed(error_message)) {
+                throw std::runtime_error("smooth-preview AI worker failed: " + error_message);
+            }
+
+            if (worker.submit(frame, frame_id, captured_at)) {
+                ++submitted_frames;
+            } else {
+                ++skipped_frames;
+            }
+
+            const Clock::time_point display_now = Clock::now();
+            const double elapsed_s =
+                std::chrono::duration<double>(display_now - wall_start).count();
+            FrameMetrics display_metrics = latest_metrics;
+            display_metrics.object_count = static_cast<double>(latest_detections.size());
+            display_metrics.display_fps =
+                elapsed_s > 0.0 ? static_cast<double>(displayed_frames + 1U) / elapsed_s : 0.0;
+            display_metrics.detection_fps =
+                elapsed_s > 0.0 ? static_cast<double>(completed_inferences) / elapsed_s : 0.0;
+            if (latest_result_finished != Clock::time_point{}) {
+                display_metrics.result_age_ms =
+                    std::chrono::duration<double, std::milli>(display_now - latest_result_finished)
+                        .count();
+                result_age_sum_ms += display_metrics.result_age_ms;
+                result_age_max_ms = std::max(result_age_max_ms, display_metrics.result_age_ms);
+                ++result_age_samples;
+            }
+
+            const auto visualization_start = Clock::now();
+            cv::Mat output_frame = frame.clone();
+            visualizer.draw(output_frame, latest_detections, display_metrics,
+                            OverlayMode::SmoothVideo);
+            const auto visualization_end = Clock::now();
+            display_metrics.visualization_ms =
+                std::chrono::duration<double, std::milli>(visualization_end - visualization_start)
+                    .count();
+
+            try {
+                cv::Mat preview_frame;
+                if (!options.fullscreen) {
+                    cv::resize(output_frame, preview_frame,
+                               cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
+                               cv::INTER_AREA);
+                }
+                if (options.fullscreen) {
+                    cv::imshow(kDisplayWindowTitle, output_frame);
+                } else {
+                    cv::imshow(kDisplayWindowTitle, preview_frame);
+                }
+                const int key = cv::waitKey(1);
+                if (key == 27 || key == 'q' || key == 'Q') {
+                    g_stop_requested = 1;
+                }
+            } catch (const cv::Exception& error) {
+                throw std::runtime_error(std::string("smooth-preview display failed: ") + error.what());
+            }
+            ++displayed_frames;
+
+            if (options.max_frames > 0 &&
+                displayed_frames >= static_cast<std::size_t>(options.max_frames)) {
+                break;
+            }
+        }
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+
+    cleanup();
+    if (displayed_frames == 0U) {
+        throw std::runtime_error("smooth-preview produced no displayable frames");
+    }
+    if (g_stop_requested != 0) {
+        log_warn("smooth-preview stopped by Ctrl+C or preview request");
+    }
+
+    const double elapsed_s = std::chrono::duration<double>(Clock::now() - wall_start).count();
+    const double display_fps = elapsed_s > 0.0
+                                   ? static_cast<double>(displayed_frames) / elapsed_s
+                                   : 0.0;
+    const double detection_fps = elapsed_s > 0.0
+                                     ? static_cast<double>(completed_inferences) / elapsed_s
+                                     : 0.0;
+    const double average_result_age = result_age_samples > 0U
+                                          ? result_age_sum_ms /
+                                                static_cast<double>(result_age_samples)
+                                          : 0.0;
+    log_info("smooth camera summary displayed_frames=" + std::to_string(displayed_frames) +
+             " submitted_frames=" + std::to_string(submitted_frames) +
+             " skipped_frames=" + std::to_string(skipped_frames) +
+             " completed_inferences=" + std::to_string(completed_inferences) +
+             " display_fps=" + std::to_string(display_fps) +
+             " detection_fps=" + std::to_string(detection_fps) +
+             " result_age_avg=" + std::to_string(average_result_age) +
+             " ms result_age_max=" + std::to_string(result_age_max_ms) + " ms");
+    log_perf("smooth camera inference=" + std::to_string(latest_metrics.inference_ms) +
+             " ms ai_latency=" + std::to_string(latest_metrics.ai_latency_ms) +
+             " ms display_fps=" + std::to_string(display_fps) +
+             " detection_fps=" + std::to_string(detection_fps));
+    return 0;
 }
 
 int run_video(const AppOptions& options, Yolov5Detector& detector, const Visualizer& visualizer)
@@ -631,6 +988,9 @@ int run_application(const AppOptions& options)
 
     if (!options.camera_path.empty()) {
 #if EDGEVISION_WITH_VIDEO
+        if (options.smooth_preview) {
+            return run_smooth_camera(options, detector, visualizer);
+        }
         return run_camera(options, detector, visualizer);
 #else
         throw std::runtime_error("camera mode requires video support in the build");

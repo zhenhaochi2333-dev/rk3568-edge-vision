@@ -38,12 +38,17 @@ struct FrameMetrics {
     double visualization_ms = 0.0;
     double end_to_end_ms = 0.0;
     double fps = 0.0;
+    double display_fps = 0.0;
+    double detection_fps = 0.0;
+    double ai_latency_ms = 0.0;
+    double result_age_ms = 0.0;
     double object_count = 0.0;
 };
 
 enum class OverlayMode {
     Image,
     Video,
+    SmoothVideo,
 };
 
 struct AppOptions {
@@ -57,6 +62,7 @@ struct AppOptions {
     int max_frames = 0;
     bool show = false;
     bool fullscreen = false;
+    bool smooth_preview = false;
     bool force = false;
 };
 
