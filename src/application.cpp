@@ -1,5 +1,6 @@
 #include "edgevision/application.hpp"
 
+#include "edgevision/iou_tracker.hpp"
 #include "edgevision/label_loader.hpp"
 #include "edgevision/logger.hpp"
 #include "edgevision/perf_monitor.hpp"
@@ -314,7 +315,7 @@ public:
         }
         pending_frame_ = std::move(frame_copy);
         pending_source_frame_id_ = source_frame_id;
-        pending_captured_at_ = captured_at;
+        pending_captured_at = captured_at;
         pending_ = true;
         condition_.notify_one();
         return true;
@@ -373,7 +374,7 @@ private:
                 }
                 frame = std::move(pending_frame_);
                 source_frame_id = pending_source_frame_id_;
-                captured_at = pending_captured_at_;
+                captured_at = pending_captured_at;
                 pending_ = false;
                 busy_ = true;
             }
@@ -471,6 +472,7 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
 
     SignalGuard signal_guard;
     SmoothAiWorker worker(detector);
+    IouTracker tracker;
     cv::Mat frame;
     std::vector<Detection> latest_detections;
     FrameMetrics latest_metrics;
@@ -524,7 +526,7 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
                 completed_inferences +=
                     static_cast<std::size_t>(snapshot.generation - last_generation);
                 last_generation = snapshot.generation;
-                latest_detections = std::move(snapshot.detections);
+                latest_detections = tracker.update(snapshot.detections);
                 latest_metrics = snapshot.metrics;
                 latest_result_finished = snapshot.finished_at;
             }

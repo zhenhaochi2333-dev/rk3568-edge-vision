@@ -179,7 +179,11 @@ void Visualizer::draw(cv::Mat& bgr, const std::vector<Detection>& detections,
             class_name = "class_" + std::to_string(detection.class_id);
         }
         std::ostringstream label;
-        label << class_name << ' ' << std::fixed << std::setprecision(1)
+        label << class_name;
+        if (detection.track_id >= 0) {
+            label << " #" << detection.track_id;
+        }
+        label << ' ' << std::fixed << std::setprecision(1)
               << detection.confidence * 100.0F << '%';
         int text_baseline = 0;
         const cv::Size text_size = cv::getTextSize(label.str(), cv::FONT_HERSHEY_SIMPLEX,

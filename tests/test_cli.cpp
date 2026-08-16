@@ -8,6 +8,7 @@
 
 void run_geometry_tests();
 void run_postprocess_tests();
+void run_iou_tracker_tests();
 void run_visualizer_tests();
 void run_perf_monitor_tests();
 void run_camera_source_tests();
@@ -77,6 +78,7 @@ int main()
     run_cli_tests();
     run_geometry_tests();
     run_postprocess_tests();
+    run_iou_tracker_tests();
     run_visualizer_tests();
     run_perf_monitor_tests();
 #if EDGEVISION_WITH_VIDEO

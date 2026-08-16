@@ -25,11 +25,13 @@ if(EDGEVISION_WITH_VIDEO)
     list(APPEND EDGEVISION_OPENCV_COMPONENTS videoio highgui)
 endif()
 find_package(OpenCV REQUIRED COMPONENTS ${EDGEVISION_OPENCV_COMPONENTS})
+find_package(Threads REQUIRED)
 
 set(EDGEVISION_SOURCES
     src/application.cpp
     src/cli_parser.cpp
     src/image_processor.cpp
+    src/iou_tracker.cpp
     src/label_loader.cpp
     src/logger.cpp
     src/perf_monitor.cpp
@@ -51,7 +53,7 @@ target_include_directories(edgevision_core
         "${RKNN_INCLUDE_DIR}"
         "${OpenCV_INCLUDE_DIRS}"
 )
-target_link_libraries(edgevision_core PUBLIC ${OpenCV_LIBS} "${RKNN_LIBRARY}")
+target_link_libraries(edgevision_core PUBLIC ${OpenCV_LIBS} "${RKNN_LIBRARY}" Threads::Threads)
 target_compile_options(edgevision_core PRIVATE -Wall -Wextra -Wpedantic)
 if(EDGEVISION_WITH_VIDEO)
     target_compile_definitions(edgevision_core PUBLIC EDGEVISION_WITH_VIDEO=1)
@@ -69,6 +71,7 @@ if(EDGEVISION_BUILD_TESTS)
     add_executable(edgevision_tests
         tests/test_cli.cpp
         tests/test_geometry.cpp
+        tests/test_iou_tracker.cpp
         tests/test_postprocess.cpp
         tests/test_visualizer.cpp
         tests/test_perf_monitor.cpp
