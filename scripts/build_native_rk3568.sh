@@ -24,5 +24,5 @@ cmake -S "${SOURCE_ROOT}" -B "${BUILD_ROOT}" \
     -DRKNN_INCLUDE_DIR="${RKNN_INCLUDE}" \
     -DRKNN_LIBRARY="${RKNN_LIBRARY}" \
     -DCMAKE_BUILD_TYPE=Release
-cmake --build "${BUILD_ROOT}" --parallel 2
+cmake --build "${BUILD_ROOT}" -- -j2
 file "${BUILD_ROOT}/edge_vision"
