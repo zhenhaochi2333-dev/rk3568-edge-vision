@@ -114,6 +114,8 @@ constexpr int kCameraPreviewWidth = 720;
 constexpr int kCameraPreviewHeight = 405;
 constexpr int kPreviewX = 20;
 constexpr int kPreviewY = 20;
+constexpr int kFullscreenWidth = 800;
+constexpr int kFullscreenHeight = 1280;
 
 void configure_display_window(int width, int height, bool fullscreen)
 {
@@ -121,6 +123,7 @@ void configure_display_window(int width, int height, bool fullscreen)
     if (fullscreen) {
         cv::setWindowProperty(kDisplayWindowTitle, cv::WND_PROP_FULLSCREEN,
                               cv::WINDOW_FULLSCREEN);
+        cv::resizeWindow(kDisplayWindowTitle, kFullscreenWidth, kFullscreenHeight);
         return;
     }
     cv::resizeWindow(kDisplayWindowTitle, width, height);
