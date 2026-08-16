@@ -12,6 +12,7 @@ cmake -S "${SOURCE_ROOT}" -B "${BUILD_ROOT}" \
     -DEDGEVISION_OPENCV_ROOT="${OPENCV_ROOT}" \
     -DRKNN_INCLUDE_DIR="${RKNN_SDK_ROOT}/include" \
     -DRKNN_LIBRARY="${RKNN_SDK_ROOT}/lib/aarch64/librknnrt.so" \
+    -DEDGEVISION_WITH_VIDEO=OFF \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build "${BUILD_ROOT}" -- -j2
 file "${BUILD_ROOT}/edge_vision"

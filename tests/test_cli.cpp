@@ -10,6 +10,7 @@ void run_geometry_tests();
 void run_postprocess_tests();
 void run_visualizer_tests();
 void run_perf_monitor_tests();
+void run_video_io_tests();
 
 namespace {
 
@@ -60,6 +61,9 @@ int main()
     run_postprocess_tests();
     run_visualizer_tests();
     run_perf_monitor_tests();
+#if EDGEVISION_WITH_VIDEO
+    run_video_io_tests();
+#endif
     std::cout << "edgevision_tests: PASS\n";
     return 0;
 }

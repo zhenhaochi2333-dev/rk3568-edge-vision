@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(EDGEVISION_BUILD_TESTS "Build lightweight Phase 0-5 tests" ON)
-option(EDGEVISION_WITH_VIDEO "Build VideoIO and video pipeline support" OFF)
+option(EDGEVISION_WITH_VIDEO "Build VideoIO and video pipeline support" ON)
 set(RKNN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/rknn_runtime_1.6.0/include" CACHE PATH
     "Directory containing rknn_api.h")
 set(RKNN_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/deps/rknn_runtime_1.6.0/lib/aarch64/librknnrt.so" CACHE FILEPATH
@@ -22,7 +22,7 @@ endif()
 
 set(EDGEVISION_OPENCV_COMPONENTS core imgproc imgcodecs)
 if(EDGEVISION_WITH_VIDEO)
-    list(APPEND EDGEVISION_OPENCV_COMPONENTS videoio)
+    list(APPEND EDGEVISION_OPENCV_COMPONENTS videoio highgui)
 endif()
 find_package(OpenCV REQUIRED COMPONENTS ${EDGEVISION_OPENCV_COMPONENTS})
 
@@ -70,6 +70,9 @@ if(EDGEVISION_BUILD_TESTS)
         tests/test_visualizer.cpp
         tests/test_perf_monitor.cpp
     )
+    if(EDGEVISION_WITH_VIDEO)
+        target_sources(edgevision_tests PRIVATE tests/test_video_io.cpp)
+    endif()
     target_link_libraries(edgevision_tests PRIVATE edgevision_core)
     target_compile_definitions(edgevision_tests PRIVATE EDGEVISION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME edgevision_tests COMMAND edgevision_tests)
