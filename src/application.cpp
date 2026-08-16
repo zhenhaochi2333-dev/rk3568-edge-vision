@@ -20,6 +20,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -190,6 +191,36 @@ int run_image(const AppOptions& options, const std::vector<std::string>& labels,
 }
 
 #if EDGEVISION_WITH_VIDEO
+
+constexpr std::size_t kCameraWarmupFrames = 30U;
+
+struct CameraProfileTotals {
+    double camera_read_ms = 0.0;
+    double preprocess_ms = 0.0;
+    double inference_ms = 0.0;
+    double postprocess_ms = 0.0;
+    double visualization_ms = 0.0;
+    double display_ms = 0.0;
+    double writer_ms = 0.0;
+    double other_ms = 0.0;
+    double loop_ms = 0.0;
+    std::size_t frames = 0U;
+
+    void add(double camera_read, double preprocess, double inference, double postprocess,
+             double visualization, double display, double writer, double other, double loop)
+    {
+        camera_read_ms += camera_read;
+        preprocess_ms += preprocess;
+        inference_ms += inference;
+        postprocess_ms += postprocess;
+        visualization_ms += visualization;
+        display_ms += display;
+        writer_ms += writer;
+        other_ms += other;
+        loop_ms += loop;
+        ++frames;
+    }
+};
 
 volatile std::sig_atomic_t g_stop_requested = 0;
 
@@ -383,8 +414,14 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
     std::size_t processed = 0U;
     int consecutive_read_failures = 0;
     const auto wall_start = Clock::now();
+    CameraProfileTotals profile;
+    bool profile_started = false;
+    Clock::time_point profile_wall_start{};
+    Clock::time_point profile_wall_end{};
 
     while (!g_stop_requested) {
+        const auto loop_start = Clock::now();
+        const auto camera_read_start = Clock::now();
         if (!camera.read(frame)) {
             ++consecutive_read_failures;
             if (processed == 0U) {
@@ -397,6 +434,8 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
             }
             continue;
         }
+        const double camera_read_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - camera_read_start).count();
         consecutive_read_failures = 0;
         if (frame.cols != 1280 || frame.rows != 720 || frame.type() != CV_8UC3) {
             throw std::runtime_error("camera frame must be 1280x720 BGR CV_8UC3; got " +
@@ -433,23 +472,36 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
             std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
 
         cv::Mat output_frame = frame.clone();
+        const auto output_visualization_start = Clock::now();
         visualizer.draw(output_frame, result.detections, metrics, OverlayMode::Video);
+        const double output_visualization_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - output_visualization_start)
+                .count();
+        const double visualization_ms = metrics.visualization_ms + output_visualization_ms;
+        double writer_ms = 0.0;
         if (record_output) {
+            const auto writer_start = Clock::now();
             output.write(output_frame);
+            writer_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - writer_start).count();
         }
         ++processed;
         const double elapsed = std::chrono::duration<double>(Clock::now() - wall_start).count();
         monitor.set_throughput_fps(elapsed > 0.0 ? static_cast<double>(processed) / elapsed : 0.0);
         monitor.add_frame(metrics);
 
+        double display_ms = 0.0;
         if (preview) {
             try {
                 cv::Mat preview_frame;
                 cv::resize(output_frame, preview_frame,
                            cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
                            cv::INTER_AREA);
+                const auto display_start = Clock::now();
                 cv::imshow(kDisplayWindowTitle, preview_frame);
                 const int key = cv::waitKey(1);
+                display_ms =
+                    std::chrono::duration<double, std::milli>(Clock::now() - display_start).count();
                 if (key == 27 || key == 'q' || key == 'Q') {
                     g_stop_requested = 1;
                 }
@@ -462,6 +514,23 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
                     throw std::runtime_error("camera preview failed and no --output was provided");
                 }
             }
+        }
+
+        const auto loop_end = Clock::now();
+        const double loop_ms =
+            std::chrono::duration<double, std::milli>(loop_end - loop_start).count();
+        if (processed > kCameraWarmupFrames) {
+            if (!profile_started) {
+                profile_started = true;
+                profile_wall_start = loop_start;
+            }
+            const double other_ms = std::max(
+                0.0, loop_ms - camera_read_ms - metrics.preprocess_ms - metrics.inference_ms -
+                          metrics.postprocess_ms - visualization_ms - display_ms - writer_ms);
+            profile.add(camera_read_ms, metrics.preprocess_ms, metrics.inference_ms,
+                        metrics.postprocess_ms, visualization_ms, display_ms, writer_ms, other_ms,
+                        loop_ms);
+            profile_wall_end = loop_end;
         }
 
         if (options.max_frames > 0 && processed >= static_cast<std::size_t>(options.max_frames)) {
@@ -485,19 +554,40 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
         verify_video_output(output.writer_info());
     }
     const double elapsed = std::chrono::duration<double>(Clock::now() - wall_start).count();
-    const double actual_fps = elapsed > 0.0 ? static_cast<double>(processed) / elapsed : 0.0;
+    const double all_frames_fps = elapsed > 0.0 ? static_cast<double>(processed) / elapsed : 0.0;
+    double measured_actual_fps = 0.0;
+    if (profile.frames > 0U) {
+        const double measured_elapsed =
+            std::chrono::duration<double>(profile_wall_end - profile_wall_start).count();
+        measured_actual_fps = measured_elapsed > 0.0
+                                  ? static_cast<double>(profile.frames) / measured_elapsed
+                                  : 0.0;
+    }
+    const double actual_fps = profile.frames > 0U ? measured_actual_fps : all_frames_fps;
     monitor.set_throughput_fps(actual_fps);
-    const FrameMetrics average = monitor.final_average();
     log_info("camera summary frames=" + std::to_string(processed) +
+             " warmup=" + std::to_string(std::min(processed, kCameraWarmupFrames)) +
+             " measured=" + std::to_string(profile.frames) +
              " actual_fps=" + std::to_string(actual_fps) +
              (record_output ? " output=" + output.writer_info().actual_path :
                               " output=none"));
-    log_perf("camera average preprocess=" + std::to_string(average.preprocess_ms) +
-             " ms inference=" + std::to_string(average.inference_ms) +
-             " ms postprocess=" + std::to_string(average.postprocess_ms) +
-             " ms visualization=" + std::to_string(average.visualization_ms) +
-             " ms e2e=" + std::to_string(average.end_to_end_ms) +
-             " ms throughput=" + std::to_string(monitor.throughput_fps()) + " fps");
+    if (profile.frames > 0U) {
+        const double count = static_cast<double>(profile.frames);
+        log_perf("camera profile warmup_frames=" + std::to_string(std::min(processed, kCameraWarmupFrames)) +
+                 " measured_frames=" + std::to_string(profile.frames) +
+                 " camera_read=" + std::to_string(profile.camera_read_ms / count) +
+                 " ms preprocess=" + std::to_string(profile.preprocess_ms / count) +
+                 " ms inference=" + std::to_string(profile.inference_ms / count) +
+                 " ms postprocess=" + std::to_string(profile.postprocess_ms / count) +
+                 " ms visualization=" + std::to_string(profile.visualization_ms / count) +
+                 " ms display=" + std::to_string(profile.display_ms / count) +
+                 " ms writer=" + std::to_string(profile.writer_ms / count) +
+                 " ms other=" + std::to_string(profile.other_ms / count) +
+                 " ms full_loop=" + std::to_string(profile.loop_ms / count) +
+                 " ms actual_fps=" + std::to_string(measured_actual_fps));
+    } else {
+        log_warn("camera profiling has no measured frames; increase --max-frames beyond warmup");
+    }
     return 0;
 }
 
