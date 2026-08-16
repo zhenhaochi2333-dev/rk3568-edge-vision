@@ -204,10 +204,12 @@ struct CameraProfileTotals {
     double writer_ms = 0.0;
     double other_ms = 0.0;
     double loop_ms = 0.0;
+    double legacy_e2e_ms = 0.0;
     std::size_t frames = 0U;
 
     void add(double camera_read, double preprocess, double inference, double postprocess,
-             double visualization, double display, double writer, double other, double loop)
+             double visualization, double display, double writer, double other, double loop,
+             double legacy_e2e)
     {
         camera_read_ms += camera_read;
         preprocess_ms += preprocess;
@@ -218,6 +220,7 @@ struct CameraProfileTotals {
         writer_ms += writer;
         other_ms += other;
         loop_ms += loop;
+        legacy_e2e_ms += legacy_e2e;
         ++frames;
     }
 };
@@ -529,7 +532,7 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
                           metrics.postprocess_ms - visualization_ms - display_ms - writer_ms);
             profile.add(camera_read_ms, metrics.preprocess_ms, metrics.inference_ms,
                         metrics.postprocess_ms, visualization_ms, display_ms, writer_ms, other_ms,
-                        loop_ms);
+                        loop_ms, metrics.end_to_end_ms);
             profile_wall_end = loop_end;
         }
 
@@ -584,6 +587,7 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
                  " ms writer=" + std::to_string(profile.writer_ms / count) +
                  " ms other=" + std::to_string(profile.other_ms / count) +
                  " ms full_loop=" + std::to_string(profile.loop_ms / count) +
+                 " ms legacy_e2e=" + std::to_string(profile.legacy_e2e_ms / count) +
                  " ms actual_fps=" + std::to_string(measured_actual_fps));
     } else {
         log_warn("camera profiling has no measured frames; increase --max-frames beyond warmup");
