@@ -92,6 +92,32 @@ bool gui_available()
     return std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
 }
 
+#if EDGEVISION_WITH_VIDEO
+
+constexpr int kPreviewWidth = 640;
+constexpr int kPreviewHeight = 640;
+constexpr int kPreviewX = 20;
+constexpr int kPreviewY = 20;
+
+void configure_display_window()
+{
+    cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL);
+    cv::resizeWindow(kDisplayWindowTitle, kPreviewWidth, kPreviewHeight);
+    cv::moveWindow(kDisplayWindowTitle, kPreviewX, kPreviewY);
+}
+
+void wait_for_image_preview()
+{
+    for (;;) {
+        const int key = cv::waitKey(50);
+        if (key == 27 || key == 10 || key == 13 || key == 'q' || key == 'Q') {
+            break;
+        }
+    }
+}
+
+#endif
+
 void log_image_metrics(const FrameMetrics& metrics)
 {
     log_perf("preprocess=" + std::to_string(metrics.preprocess_ms) + " ms inference=" +
@@ -136,10 +162,10 @@ int run_image(const AppOptions& options, const std::vector<std::string>& labels,
             log_warn("Local GUI session unavailable; display disabled");
         } else {
             try {
-                cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL);
+                configure_display_window();
                 cv::imshow(kDisplayWindowTitle, output);
-                cv::waitKey(0);
-                cv::destroyAllWindows();
+                wait_for_image_preview();
+                cv::destroyWindow(kDisplayWindowTitle);
             } catch (const cv::Exception& error) {
                 log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
             }
@@ -209,7 +235,7 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
 
     if (preview) {
         try {
-            cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL);
+            configure_display_window();
         } catch (const cv::Exception& error) {
             log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
             preview = false;
