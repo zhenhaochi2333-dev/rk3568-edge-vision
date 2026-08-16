@@ -48,7 +48,8 @@ public:
     const std::vector<TensorMeta>& input_metas() const { return input_metas_; }
     const std::vector<TensorMeta>& output_metas() const { return output_metas_; }
 
-    RknnOutputBatch run(const std::uint8_t* input_data, std::size_t input_size);
+    RknnOutputBatch run(const std::uint8_t* input_data, std::size_t input_size,
+                        double* inference_ms = nullptr);
 
 private:
     void query_metadata();

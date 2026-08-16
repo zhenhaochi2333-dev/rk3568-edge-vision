@@ -3,6 +3,7 @@
 #include "edgevision/logger.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -171,7 +172,8 @@ void RknnModel::query_metadata()
     model_channels_ = static_cast<int>(input.dims[3]);
 }
 
-RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input_size)
+RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input_size,
+                               double* inference_ms)
 {
     if (input_data == nullptr || input_size == 0U || input_size > std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error("invalid RKNN input buffer");
@@ -189,7 +191,12 @@ RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input
     if (ret != RKNN_SUCC) {
         throw std::runtime_error("rknn_inputs_set failed with ret=" + std::to_string(ret));
     }
+    const auto inference_start = std::chrono::steady_clock::now();
     ret = rknn_run(context_, nullptr);
+    const auto inference_end = std::chrono::steady_clock::now();
+    if (inference_ms != nullptr) {
+        *inference_ms = std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
+    }
     if (ret != RKNN_SUCC) {
         throw std::runtime_error("rknn_run failed with ret=" + std::to_string(ret));
     }

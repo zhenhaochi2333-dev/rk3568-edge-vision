@@ -14,11 +14,17 @@ struct RawTensorView {
     TensorMeta meta;
 };
 
+struct DetectionResult {
+    std::vector<Detection> detections;
+    FrameMetrics metrics;
+};
+
 class Yolov5Detector {
 public:
     Yolov5Detector(RknnModel& model, float confidence_threshold, float nms_threshold);
 
     std::vector<Detection> detect(const cv::Mat& bgr);
+    DetectionResult detect_with_metrics(const cv::Mat& bgr);
 
     static std::vector<Detection> decode_raw(const std::vector<RawTensorView>& outputs,
                                              const LetterboxInfo& letterbox,

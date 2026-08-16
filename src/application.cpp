@@ -2,7 +2,9 @@
 
 #include "edgevision/label_loader.hpp"
 #include "edgevision/logger.hpp"
+#include "edgevision/perf_monitor.hpp"
 #include "edgevision/rknn_model.hpp"
+#include "edgevision/visualizer.hpp"
 #include "edgevision/yolov5_detector.hpp"
 
 #include <opencv2/imgcodecs.hpp>
@@ -13,6 +15,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <chrono>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -64,30 +67,6 @@ void validate_options(const AppOptions& options)
     }
 }
 
-void save_minimal_debug_image(const cv::Mat& source, const std::vector<Detection>& detections,
-                              const std::vector<std::string>& labels, const std::string& path)
-{
-    cv::Mat output = source.clone();
-    for (const Detection& detection : detections) {
-        const int left = std::max(0, static_cast<int>(detection.box.x));
-        const int top = std::max(0, static_cast<int>(detection.box.y));
-        if (left >= output.cols || top >= output.rows) {
-            continue;
-        }
-        const int width = std::min(std::max(1, static_cast<int>(detection.box.width)), output.cols - left);
-        const int height = std::min(std::max(1, static_cast<int>(detection.box.height)), output.rows - top);
-        cv::rectangle(output, cv::Rect(left, top, width, height), cv::Scalar(0, 255, 0), 2);
-        std::ostringstream text;
-        text << LabelLoader::name(labels, detection.class_id) << ' '
-             << std::fixed << std::setprecision(1) << detection.confidence * 100.0F << '%';
-        cv::putText(output, text.str(), cv::Point(left, std::max(15, top - 5)),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
-    }
-    if (!cv::imwrite(path, output)) {
-        throw std::runtime_error("failed to write output image: " + path);
-    }
-}
-
 }  // namespace
 
 int run_application(const AppOptions& options)
@@ -105,9 +84,27 @@ int run_application(const AppOptions& options)
 
     RknnModel model(options.model_path);
     Yolov5Detector detector(model, options.conf_threshold, options.nms_threshold);
-    const std::vector<Detection> detections = detector.detect(image);
+    const auto end_to_end_start = std::chrono::steady_clock::now();
+    const DetectionResult result = detector.detect_with_metrics(image);
+    FrameMetrics metrics = result.metrics;
+    const auto visualization_start = std::chrono::steady_clock::now();
+    const Visualizer visualizer(labels);
+    cv::Mat timing_image = image.clone();
+    visualizer.draw(timing_image, result.detections, metrics, OverlayMode::Image);
+    const auto visualization_end = std::chrono::steady_clock::now();
+    metrics.visualization_ms =
+        std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
+    metrics.end_to_end_ms =
+        std::chrono::duration<double, std::milli>(visualization_end - end_to_end_start).count();
+    metrics.object_count = static_cast<double>(result.detections.size());
 
-    for (const Detection& detection : detections) {
+    cv::Mat output = image.clone();
+    visualizer.draw(output, result.detections, metrics, OverlayMode::Image);
+
+    PerfMonitor monitor;
+    monitor.add_frame(metrics);
+
+    for (const Detection& detection : result.detections) {
         const std::string& label = LabelLoader::name(labels, detection.class_id);
         std::ostringstream line;
         line << label << " @ (" << static_cast<int>(detection.box.x) << ' '
@@ -117,8 +114,15 @@ int run_application(const AppOptions& options)
              << std::fixed << std::setprecision(3) << detection.confidence;
         log_info(line.str());
     }
-    log_info("detections=" + std::to_string(detections.size()));
-    save_minimal_debug_image(image, detections, labels, options.output_path);
+    log_info("detections=" + std::to_string(result.detections.size()));
+    log_perf("preprocess=" + std::to_string(metrics.preprocess_ms) + " ms inference=" +
+             std::to_string(metrics.inference_ms) + " ms postprocess=" +
+             std::to_string(metrics.postprocess_ms) + " ms visualization=" +
+             std::to_string(metrics.visualization_ms) + " ms e2e=" +
+             std::to_string(metrics.end_to_end_ms) + " ms");
+    if (!cv::imwrite(options.output_path, output)) {
+        throw std::runtime_error("failed to write output image: " + options.output_path);
+    }
     log_info("wrote output image: " + options.output_path);
     return 0;
 }

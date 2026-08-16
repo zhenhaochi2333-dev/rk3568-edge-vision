@@ -3,6 +3,7 @@
 #include "rknn_api.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -184,8 +185,19 @@ Yolov5Detector::Yolov5Detector(RknnModel& model, float confidence_threshold, flo
 
 std::vector<Detection> Yolov5Detector::detect(const cv::Mat& bgr)
 {
+    return detect_with_metrics(bgr).detections;
+}
+
+DetectionResult Yolov5Detector::detect_with_metrics(const cv::Mat& bgr)
+{
+    DetectionResult result;
+    const auto preprocess_start = std::chrono::steady_clock::now();
     PreparedInput prepared = processor_.prepare(bgr);
-    RknnOutputBatch output_batch = model_.run(prepared.nhwc.data(), prepared.nhwc.size());
+    const auto preprocess_end = std::chrono::steady_clock::now();
+    result.metrics.preprocess_ms =
+        std::chrono::duration<double, std::milli>(preprocess_end - preprocess_start).count();
+    RknnOutputBatch output_batch = model_.run(prepared.nhwc.data(), prepared.nhwc.size(),
+                                              &result.metrics.inference_ms);
     const std::vector<TensorMeta>& metas = model_.output_metas();
     const std::vector<rknn_output>& outputs = output_batch.outputs();
     std::vector<RawTensorView> views;
@@ -193,8 +205,14 @@ std::vector<Detection> Yolov5Detector::detect(const cv::Mat& bgr)
     for (std::size_t index = 0; index < outputs.size(); ++index) {
         views.push_back(RawTensorView{outputs[index].buf, outputs[index].size, metas[index]});
     }
-    return decode_raw(views, prepared.letterbox, model_.model_width(), model_.model_height(),
-                      confidence_threshold_, nms_threshold_);
+    const auto postprocess_start = std::chrono::steady_clock::now();
+    result.detections = decode_raw(views, prepared.letterbox, model_.model_width(),
+                                   model_.model_height(), confidence_threshold_, nms_threshold_);
+    const auto postprocess_end = std::chrono::steady_clock::now();
+    result.metrics.postprocess_ms =
+        std::chrono::duration<double, std::milli>(postprocess_end - postprocess_start).count();
+    result.metrics.object_count = static_cast<double>(result.detections.size());
+    return result;
 }
 
 std::vector<Detection> Yolov5Detector::decode_raw(const std::vector<RawTensorView>& outputs,

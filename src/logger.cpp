@@ -28,4 +28,9 @@ void log_error(const std::string& message)
     write_log("[ERROR]", message);
 }
 
+void log_perf(const std::string& message)
+{
+    write_log("[PERF]", message);
+}
+
 }  // namespace edgevision

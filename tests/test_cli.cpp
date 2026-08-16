@@ -8,6 +8,8 @@
 
 void run_geometry_tests();
 void run_postprocess_tests();
+void run_visualizer_tests();
+void run_perf_monitor_tests();
 
 namespace {
 
@@ -56,6 +58,8 @@ int main()
     run_cli_tests();
     run_geometry_tests();
     run_postprocess_tests();
+    run_visualizer_tests();
+    run_perf_monitor_tests();
     std::cout << "edgevision_tests: PASS\n";
     return 0;
 }

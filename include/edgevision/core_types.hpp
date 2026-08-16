@@ -31,6 +31,21 @@ struct PreparedInput {
     LetterboxInfo letterbox;
 };
 
+struct FrameMetrics {
+    double preprocess_ms = 0.0;
+    double inference_ms = 0.0;
+    double postprocess_ms = 0.0;
+    double visualization_ms = 0.0;
+    double end_to_end_ms = 0.0;
+    double fps = 0.0;
+    double object_count = 0.0;
+};
+
+enum class OverlayMode {
+    Image,
+    Video,
+};
+
 struct AppOptions {
     std::string model_path;
     std::string labels_path;
