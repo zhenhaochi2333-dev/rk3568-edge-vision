@@ -1,9 +1,11 @@
 #include "edgevision/application.hpp"
 
+#include "edgevision/display_composer.hpp"
 #include "edgevision/iou_tracker.hpp"
 #include "edgevision/label_loader.hpp"
 #include "edgevision/logger.hpp"
 #include "edgevision/perf_monitor.hpp"
+#include "edgevision/region_monitor.hpp"
 #include "edgevision/rknn_model.hpp"
 #include "edgevision/visualizer.hpp"
 #include "edgevision/yolov5_detector.hpp"
@@ -28,6 +30,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -278,14 +281,19 @@ struct SmoothDetectionSnapshot {
     std::uint64_t source_frame_id = 0U;
     std::vector<Detection> detections;
     FrameMetrics metrics;
+    RegionSnapshot region;
     Clock::time_point captured_at{};
     Clock::time_point finished_at{};
 };
 
 class SmoothAiWorker {
 public:
-    explicit SmoothAiWorker(Yolov5Detector& detector)
-        : detector_(detector), worker_(&SmoothAiWorker::run, this)
+    SmoothAiWorker(Yolov5Detector& detector, const NormalizedRoi* roi)
+        : detector_(detector),
+          region_monitor_(roi == nullptr
+                              ? nullptr
+                              : std::unique_ptr<RegionMonitor>(new RegionMonitor(*roi))),
+          worker_(&SmoothAiWorker::run, this)
     {
     }
 
@@ -383,16 +391,23 @@ private:
                 const Clock::time_point ai_start = Clock::now();
                 const DetectionResult result = detector_.detect_with_metrics(frame);
                 const Clock::time_point finished_at = Clock::now();
+                std::vector<Detection> tracked_detections = tracker_.update(result.detections);
+                RegionSnapshot region;
+                if (region_monitor_ != nullptr) {
+                    region = region_monitor_->update(tracked_detections, captured_at,
+                                                     frame.cols, frame.rows);
+                }
                 FrameMetrics metrics = result.metrics;
-                metrics.object_count = static_cast<double>(result.detections.size());
+                metrics.object_count = static_cast<double>(tracked_detections.size());
                 metrics.ai_latency_ms =
                     std::chrono::duration<double, std::milli>(finished_at - ai_start).count();
 
                 std::lock_guard<std::mutex> lock(mutex_);
                 latest_.generation += 1U;
                 latest_.source_frame_id = source_frame_id;
-                latest_.detections = result.detections;
+                latest_.detections = std::move(tracked_detections);
                 latest_.metrics = metrics;
+                latest_.region = std::move(region);
                 latest_.captured_at = captured_at;
                 latest_.finished_at = finished_at;
                 busy_ = false;
@@ -417,6 +432,8 @@ private:
     }
 
     Yolov5Detector& detector_;
+    IouTracker tracker_;
+    std::unique_ptr<RegionMonitor> region_monitor_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::thread worker_;
@@ -447,7 +464,7 @@ void verify_video_output(const VideoWriterInfo& info)
 }
 
 int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
-                      const Visualizer& visualizer)
+                      const std::vector<std::string>& labels)
 {
     if (!gui_available()) {
         throw std::runtime_error("smooth-preview requires a usable X11 display");
@@ -463,7 +480,9 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
 
     bool window_ready = false;
     try {
-        configure_display_window(kCameraPreviewWidth, kCameraPreviewHeight, options.fullscreen);
+        configure_display_window(options.fullscreen ? DisplayComposer::kCanvasWidth : 400,
+                                 options.fullscreen ? DisplayComposer::kCanvasHeight : 640,
+                                 options.fullscreen);
         window_ready = true;
     } catch (const cv::Exception& error) {
         camera.release();
@@ -471,10 +490,13 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
     }
 
     SignalGuard signal_guard;
-    SmoothAiWorker worker(detector);
-    IouTracker tracker;
+    SmoothAiWorker worker(detector, options.roi_enabled ? &options.roi : nullptr);
+    DisplayComposer composer(labels);
+    const NormalizedRoi* active_roi = options.roi_enabled ? &options.roi : nullptr;
     cv::Mat frame;
+    cv::Mat preview_frame;
     std::vector<Detection> latest_detections;
+    RegionSnapshot latest_region;
     FrameMetrics latest_metrics;
     Clock::time_point latest_result_finished{};
     std::uint64_t frame_id = 0U;
@@ -526,7 +548,8 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
                 completed_inferences +=
                     static_cast<std::size_t>(snapshot.generation - last_generation);
                 last_generation = snapshot.generation;
-                latest_detections = tracker.update(snapshot.detections);
+                latest_detections = snapshot.detections;
+                latest_region = snapshot.region;
                 latest_metrics = snapshot.metrics;
                 latest_result_finished = snapshot.finished_at;
             }
@@ -559,24 +582,20 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
             }
 
             const auto visualization_start = Clock::now();
-            cv::Mat output_frame = frame.clone();
-            visualizer.draw(output_frame, latest_detections, display_metrics,
-                            OverlayMode::SmoothVideo);
+            const cv::Mat& dashboard = composer.compose(
+                frame, latest_detections, display_metrics, latest_region.occupancy,
+                active_roi, latest_region.recent_events);
             const auto visualization_end = Clock::now();
             display_metrics.visualization_ms =
                 std::chrono::duration<double, std::milli>(visualization_end - visualization_start)
                     .count();
 
             try {
-                cv::Mat preview_frame;
-                if (!options.fullscreen) {
-                    cv::resize(output_frame, preview_frame,
-                               cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
-                               cv::INTER_AREA);
-                }
                 if (options.fullscreen) {
-                    cv::imshow(kDisplayWindowTitle, output_frame);
+                    cv::imshow(kDisplayWindowTitle, dashboard);
                 } else {
+                    cv::resize(dashboard, preview_frame, cv::Size(400, 640), 0.0, 0.0,
+                               cv::INTER_AREA);
                     cv::imshow(kDisplayWindowTitle, preview_frame);
                 }
                 const int key = cv::waitKey(1);
@@ -991,7 +1010,7 @@ int run_application(const AppOptions& options)
     if (!options.camera_path.empty()) {
 #if EDGEVISION_WITH_VIDEO
         if (options.smooth_preview) {
-            return run_smooth_camera(options, detector, visualizer);
+            return run_smooth_camera(options, detector, labels);
         }
         return run_camera(options, detector, visualizer);
 #else

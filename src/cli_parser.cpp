@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -42,6 +43,28 @@ int parse_int(const std::string& text, const char* option)
     return static_cast<int>(value);
 }
 
+NormalizedRoi parse_roi(const std::string& text)
+{
+    std::stringstream stream(text);
+    NormalizedRoi roi;
+    char first = '\0';
+    char second = '\0';
+    char third = '\0';
+    if (!(stream >> roi.x >> first >> roi.y >> second >> roi.width >> third >> roi.height) ||
+        first != ',' || second != ',' || third != ',') {
+        throw std::runtime_error("invalid value for --roi: " + text);
+    }
+    stream >> std::ws;
+    if (!stream.eof()) {
+        throw std::runtime_error("invalid value for --roi: " + text);
+    }
+    if (roi.x < 0.0F || roi.y < 0.0F || roi.width <= 0.0F || roi.height <= 0.0F ||
+        roi.x + roi.width > 1.0F || roi.y + roi.height > 1.0F) {
+        throw std::runtime_error("--roi must stay within normalized [0,1] coordinates");
+    }
+    return roi;
+}
+
 }  // namespace
 
 CliParseResult CliParser::parse(int argc, char** argv)
@@ -73,6 +96,9 @@ CliParseResult CliParser::parse(int argc, char** argv)
             result.options.fullscreen = true;
         } else if (option == "--smooth-preview") {
             result.options.smooth_preview = true;
+        } else if (option == "--roi") {
+            result.options.roi = parse_roi(require_value(index, argc, argv, "--roi"));
+            result.options.roi_enabled = true;
         } else if (option == "--force") {
             result.options.force = true;
         } else {
@@ -120,6 +146,9 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.smooth_preview && !result.options.output_path.empty()) {
         throw std::runtime_error("--smooth-preview does not support --output");
     }
+    if (result.options.roi_enabled && !result.options.smooth_preview) {
+        throw std::runtime_error("--roi requires --smooth-preview");
+    }
     return result;
 }
 
@@ -128,7 +157,7 @@ const char* CliParser::usage()
     return "Usage: edge_vision --model MODEL --labels LABELS "
            "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
-           "[--smooth-preview] [--force] [--help]";
+           "[--smooth-preview] [--roi X,Y,W,H] [--force] [--help]";
 }
 
 }  // namespace edgevision

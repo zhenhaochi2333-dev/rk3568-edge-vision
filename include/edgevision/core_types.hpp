@@ -32,6 +32,13 @@ struct PreparedInput {
     LetterboxInfo letterbox;
 };
 
+struct NormalizedRoi {
+    float x = 0.0F;
+    float y = 0.0F;
+    float width = 1.0F;
+    float height = 1.0F;
+};
+
 struct FrameMetrics {
     double preprocess_ms = 0.0;
     double inference_ms = 0.0;
@@ -65,6 +72,8 @@ struct AppOptions {
     bool fullscreen = false;
     bool smooth_preview = false;
     bool force = false;
+    bool roi_enabled = false;
+    NormalizedRoi roi;
 };
 
 struct TensorMeta {

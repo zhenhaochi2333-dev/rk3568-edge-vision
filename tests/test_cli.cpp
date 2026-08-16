@@ -7,9 +7,11 @@
 #include <vector>
 
 void run_geometry_tests();
+void run_display_composer_tests();
 void run_postprocess_tests();
 void run_iou_tracker_tests();
 void run_visualizer_tests();
+void run_region_monitor_tests();
 void run_perf_monitor_tests();
 void run_camera_source_tests();
 void run_video_io_tests();
@@ -50,11 +52,15 @@ void run_cli_tests()
     assert(valid.options.force);
     const edgevision::CliParseResult camera = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
-        "--camera", "/dev/video0", "--show", "--fullscreen", "--smooth-preview"});
+        "--camera", "/dev/video0", "--show", "--fullscreen", "--smooth-preview",
+        "--roi", "0.25,0.20,0.50,0.60"});
     assert(camera.options.camera_path == "/dev/video0");
     assert(camera.options.input_path.empty());
     assert(camera.options.fullscreen);
     assert(camera.options.smooth_preview);
+    assert(camera.options.roi_enabled);
+    assert(camera.options.roi.x == 0.25F);
+    assert(camera.options.roi.height == 0.60F);
     expect_error([] { parse({"edge_vision", "--unknown"}); });
     expect_error([] { parse({"edge_vision", "--model"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i",
@@ -67,6 +73,14 @@ void run_cli_tests()
                              "/dev/video0", "--show", "--smooth-preview", "--output", "o"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i",
                              "--output", "o", "--smooth-preview"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i",
+                             "--output", "o", "--roi", "0.1,0.1,0.5,0.5"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
+                             "/dev/video0", "--show", "--smooth-preview", "--roi",
+                             "0.8,0.1,0.3,0.3"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
+                             "/dev/video0", "--show", "--smooth-preview", "--roi",
+                             "0.1,0.1,0.5"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--conf", "1.1"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--max-frames", "-1"}); });
 }
@@ -76,9 +90,11 @@ void run_cli_tests()
 int main()
 {
     run_cli_tests();
+    run_display_composer_tests();
     run_geometry_tests();
     run_postprocess_tests();
     run_iou_tracker_tests();
+    run_region_monitor_tests();
     run_visualizer_tests();
     run_perf_monitor_tests();
 #if EDGEVISION_WITH_VIDEO

@@ -36,6 +36,7 @@ set(EDGEVISION_SOURCES
     src/label_loader.cpp
     src/logger.cpp
     src/perf_monitor.cpp
+    src/region_monitor.cpp
     src/rknn_model.cpp
     src/yolov5_detector.cpp
     src/visualizer.cpp
@@ -75,6 +76,7 @@ if(EDGEVISION_BUILD_TESTS)
         tests/test_geometry.cpp
         tests/test_iou_tracker.cpp
         tests/test_postprocess.cpp
+        tests/test_region_monitor.cpp
         tests/test_visualizer.cpp
         tests/test_perf_monitor.cpp
     )
