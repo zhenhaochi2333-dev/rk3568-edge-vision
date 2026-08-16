@@ -253,10 +253,16 @@ std::vector<Detection> Yolov5Detector::decode_raw(const std::vector<RawTensorVie
             throw std::runtime_error("YOLOv5 output format is neither NCHW nor NHWC");
         }
         if (channels != kValuesPerAnchor * 3 || grid_height <= 0 || grid_width <= 0 ||
+            model_height <= 0 || model_width <= 0 ||
             model_height % grid_height != 0 || model_width % grid_width != 0) {
             throw std::runtime_error("RKNN output metadata does not describe a YOLOv5 head");
         }
-        const int stride = model_height / grid_height;
+        const int stride_height = model_height / grid_height;
+        const int stride_width = model_width / grid_width;
+        if (stride_height != stride_width) {
+            throw std::runtime_error("RKNN output head has different horizontal and vertical strides");
+        }
+        const int stride = stride_height;
         if (stride != 8 && stride != 16 && stride != 32) {
             throw std::runtime_error("unexpected YOLOv5 output stride: " + std::to_string(stride));
         }
@@ -274,8 +280,6 @@ std::vector<Detection> Yolov5Detector::decode_raw(const std::vector<RawTensorVie
         const Head& head = heads[head_index];
         const RawTensorView& view = *head.view;
         const int channels = kValuesPerAnchor * 3;
-        const std::size_t grid_size = static_cast<std::size_t>(head.grid_height) *
-                                      static_cast<std::size_t>(head.grid_width);
         for (int anchor = 0; anchor < 3; ++anchor) {
             for (int row = 0; row < head.grid_height; ++row) {
                 for (int column = 0; column < head.grid_width; ++column) {
@@ -334,7 +338,6 @@ std::vector<Detection> Yolov5Detector::decode_raw(const std::vector<RawTensorVie
                 }
             }
         }
-        (void)grid_size;
     }
 
     const std::vector<Candidate> kept = apply_reference_nms(std::move(candidates), nms_threshold);

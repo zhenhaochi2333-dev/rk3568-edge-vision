@@ -170,12 +170,22 @@ void RknnModel::query_metadata()
     model_height_ = static_cast<int>(input.dims[1]);
     model_width_ = static_cast<int>(input.dims[2]);
     model_channels_ = static_cast<int>(input.dims[3]);
+    const std::size_t expected_elements = static_cast<std::size_t>(model_width_) *
+                                          static_cast<std::size_t>(model_height_) *
+                                          static_cast<std::size_t>(model_channels_);
+    if (input.n_elems != expected_elements) {
+        throw std::runtime_error("model input metadata element count does not match NHWC shape");
+    }
 }
 
 RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input_size,
                                double* inference_ms)
 {
-    if (input_data == nullptr || input_size == 0U || input_size > std::numeric_limits<std::uint32_t>::max()) {
+    const std::size_t expected_size = static_cast<std::size_t>(model_width_) *
+                                      static_cast<std::size_t>(model_height_) *
+                                      static_cast<std::size_t>(model_channels_);
+    if (input_data == nullptr || input_size != expected_size ||
+        input_size > std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error("invalid RKNN input buffer");
     }
 
