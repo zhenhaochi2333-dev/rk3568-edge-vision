@@ -49,15 +49,18 @@ void run_cli_tests()
     assert(valid.options.force);
     const edgevision::CliParseResult camera = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
-        "--camera", "/dev/video0", "--show"});
+        "--camera", "/dev/video0", "--show", "--fullscreen"});
     assert(camera.options.camera_path == "/dev/video0");
     assert(camera.options.input_path.empty());
+    assert(camera.options.fullscreen);
     expect_error([] { parse({"edge_vision", "--unknown"}); });
     expect_error([] { parse({"edge_vision", "--model"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i",
                              "--camera", "/dev/video0", "--output", "o"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
                              "/dev/video0"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
+                             "/dev/video0", "--fullscreen"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--conf", "1.1"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--max-frames", "-1"}); });
 }

@@ -69,6 +69,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
             result.options.max_frames = parse_int(require_value(index, argc, argv, "--max-frames"), "--max-frames");
         } else if (option == "--show") {
             result.options.show = true;
+        } else if (option == "--fullscreen") {
+            result.options.fullscreen = true;
         } else if (option == "--force") {
             result.options.force = true;
         } else {
@@ -104,6 +106,9 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.max_frames < 0) {
         throw std::runtime_error("--max-frames must be non-negative");
     }
+    if (result.options.fullscreen && !result.options.show) {
+        throw std::runtime_error("--fullscreen requires --show");
+    }
     return result;
 }
 
@@ -111,7 +116,8 @@ const char* CliParser::usage()
 {
     return "Usage: edge_vision --model MODEL --labels LABELS "
            "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
-           "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--force] [--help]";
+           "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
+           "[--force] [--help]";
 }
 
 }  // namespace edgevision

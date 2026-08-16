@@ -56,6 +56,7 @@ struct AppOptions {
     float nms_threshold = 0.45F;
     int max_frames = 0;
     bool show = false;
+    bool fullscreen = false;
     bool force = false;
 };
 

@@ -67,6 +67,9 @@ void validate_options(const AppOptions& options)
     if (camera_mode && options.output_path.empty() && !options.show) {
         throw std::runtime_error("camera mode requires --show or --output");
     }
+    if (options.fullscreen && !options.show) {
+        throw std::runtime_error("--fullscreen requires --show");
+    }
     if (!options.output_path.empty() && !camera_mode &&
         real_path_if_possible(options.input_path) == real_path_if_possible(options.output_path)) {
         throw std::runtime_error("input and output paths must be different");
@@ -112,9 +115,14 @@ constexpr int kCameraPreviewHeight = 405;
 constexpr int kPreviewX = 20;
 constexpr int kPreviewY = 20;
 
-void configure_display_window(int width, int height)
+void configure_display_window(int width, int height, bool fullscreen)
 {
-    cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL);
+    cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
+    if (fullscreen) {
+        cv::setWindowProperty(kDisplayWindowTitle, cv::WND_PROP_FULLSCREEN,
+                              cv::WINDOW_FULLSCREEN);
+        return;
+    }
     cv::resizeWindow(kDisplayWindowTitle, width, height);
     cv::moveWindow(kDisplayWindowTitle, kPreviewX, kPreviewY);
 }
@@ -149,16 +157,14 @@ int run_image(const AppOptions& options, const std::vector<std::string>& labels,
     metrics.object_count = static_cast<double>(result.detections.size());
 
     const auto visualization_start = Clock::now();
-    cv::Mat timing_image = image.clone();
-    visualizer.draw(timing_image, result.detections, metrics, OverlayMode::Image);
+    cv::Mat output = image.clone();
+    visualizer.draw(output, result.detections, metrics, OverlayMode::Image);
     const auto visualization_end = Clock::now();
     metrics.visualization_ms =
         std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
     metrics.end_to_end_ms =
         std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
 
-    cv::Mat output = image.clone();
-    visualizer.draw(output, result.detections, metrics, OverlayMode::Image);
     for (const Detection& detection : result.detections) {
         log_info(format_detection(detection, labels));
     }
@@ -175,7 +181,7 @@ int run_image(const AppOptions& options, const std::vector<std::string>& labels,
             log_warn("Local GUI session unavailable; display disabled");
         } else {
             try {
-                configure_display_window(kPreviewWidth, kPreviewHeight);
+                configure_display_window(kPreviewWidth, kPreviewHeight, options.fullscreen);
                 cv::imshow(kDisplayWindowTitle, output);
                 wait_for_image_preview();
                 cv::destroyWindow(kDisplayWindowTitle);
@@ -281,7 +287,7 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
 
     if (preview) {
         try {
-            configure_display_window(kPreviewWidth, kPreviewHeight);
+            configure_display_window(kPreviewWidth, kPreviewHeight, options.fullscreen);
         } catch (const cv::Exception& error) {
             log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
             preview = false;
@@ -293,6 +299,8 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
     cv::Mat frame;
     std::size_t processed = 0U;
     const auto wall_start = Clock::now();
+    FrameMetrics previous_overlay_metrics;
+    bool have_previous_overlay_metrics = false;
     while (!g_stop_requested && video.read(frame)) {
         if (frame.empty()) {
             continue;
@@ -311,20 +319,24 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
         const DetectionResult result = detector.detect_with_metrics(frame);
         FrameMetrics metrics = result.metrics;
         metrics.object_count = static_cast<double>(result.detections.size());
+        FrameMetrics overlay_metrics = metrics;
+        if (have_previous_overlay_metrics) {
+            overlay_metrics.visualization_ms = previous_overlay_metrics.visualization_ms;
+            overlay_metrics.end_to_end_ms = previous_overlay_metrics.end_to_end_ms;
+        }
         const auto visualization_start = Clock::now();
         const double before_draw_s =
             std::chrono::duration<double>(visualization_start - wall_start).count();
         metrics.fps = before_draw_s > 0.0 ? static_cast<double>(processed + 1U) / before_draw_s : 0.0;
-        cv::Mat timing_image = frame.clone();
-        visualizer.draw(timing_image, result.detections, metrics, OverlayMode::Video);
+        cv::Mat output = frame.clone();
+        visualizer.draw(output, result.detections, overlay_metrics, OverlayMode::Video);
         const auto visualization_end = Clock::now();
         metrics.visualization_ms =
             std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
         metrics.end_to_end_ms =
             std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
-
-        cv::Mat output = frame.clone();
-        visualizer.draw(output, result.detections, metrics, OverlayMode::Video);
+        previous_overlay_metrics = metrics;
+        have_previous_overlay_metrics = true;
         video.write(output);
         ++processed;
         const double elapsed = std::chrono::duration<double>(Clock::now() - wall_start).count();
@@ -397,7 +409,7 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
 
     if (preview) {
         try {
-            configure_display_window(kCameraPreviewWidth, kCameraPreviewHeight);
+            configure_display_window(kCameraPreviewWidth, kCameraPreviewHeight, options.fullscreen);
         } catch (const cv::Exception& error) {
             log_warn(std::string("Local GUI session unavailable; camera preview disabled: ") +
                      error.what());
@@ -421,6 +433,8 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
     bool profile_started = false;
     Clock::time_point profile_wall_start{};
     Clock::time_point profile_wall_end{};
+    FrameMetrics previous_overlay_metrics;
+    bool have_previous_overlay_metrics = false;
 
     while (!g_stop_requested) {
         const auto loop_start = Clock::now();
@@ -462,25 +476,24 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
         const DetectionResult result = detector.detect_with_metrics(frame);
         FrameMetrics metrics = result.metrics;
         metrics.object_count = static_cast<double>(result.detections.size());
+        FrameMetrics overlay_metrics = metrics;
+        if (have_previous_overlay_metrics) {
+            overlay_metrics.visualization_ms = previous_overlay_metrics.visualization_ms;
+            overlay_metrics.end_to_end_ms = previous_overlay_metrics.end_to_end_ms;
+        }
         const auto visualization_start = Clock::now();
         const double before_draw_s =
             std::chrono::duration<double>(visualization_start - wall_start).count();
         metrics.fps = before_draw_s > 0.0 ? static_cast<double>(processed + 1U) / before_draw_s : 0.0;
-        cv::Mat timing_image = frame.clone();
-        visualizer.draw(timing_image, result.detections, metrics, OverlayMode::Video);
+        cv::Mat output_frame = frame.clone();
+        visualizer.draw(output_frame, result.detections, overlay_metrics, OverlayMode::Video);
         const auto visualization_end = Clock::now();
         metrics.visualization_ms =
             std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
         metrics.end_to_end_ms =
             std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
-
-        cv::Mat output_frame = frame.clone();
-        const auto output_visualization_start = Clock::now();
-        visualizer.draw(output_frame, result.detections, metrics, OverlayMode::Video);
-        const double output_visualization_ms =
-            std::chrono::duration<double, std::milli>(Clock::now() - output_visualization_start)
-                .count();
-        const double visualization_ms = metrics.visualization_ms + output_visualization_ms;
+        previous_overlay_metrics = metrics;
+        have_previous_overlay_metrics = true;
         double writer_ms = 0.0;
         if (record_output) {
             const auto writer_start = Clock::now();
@@ -497,11 +510,17 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
         if (preview) {
             try {
                 cv::Mat preview_frame;
-                cv::resize(output_frame, preview_frame,
-                           cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
-                           cv::INTER_AREA);
+                if (!options.fullscreen) {
+                    cv::resize(output_frame, preview_frame,
+                               cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
+                               cv::INTER_AREA);
+                }
                 const auto display_start = Clock::now();
-                cv::imshow(kDisplayWindowTitle, preview_frame);
+                if (options.fullscreen) {
+                    cv::imshow(kDisplayWindowTitle, output_frame);
+                } else {
+                    cv::imshow(kDisplayWindowTitle, preview_frame);
+                }
                 const int key = cv::waitKey(1);
                 display_ms =
                     std::chrono::duration<double, std::milli>(Clock::now() - display_start).count();
@@ -529,10 +548,10 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
             }
             const double other_ms = std::max(
                 0.0, loop_ms - camera_read_ms - metrics.preprocess_ms - metrics.inference_ms -
-                          metrics.postprocess_ms - visualization_ms - display_ms - writer_ms);
+                          metrics.postprocess_ms - metrics.visualization_ms - display_ms - writer_ms);
             profile.add(camera_read_ms, metrics.preprocess_ms, metrics.inference_ms,
-                        metrics.postprocess_ms, visualization_ms, display_ms, writer_ms, other_ms,
-                        loop_ms, metrics.end_to_end_ms);
+                        metrics.postprocess_ms, metrics.visualization_ms, display_ms, writer_ms,
+                        other_ms, loop_ms, metrics.end_to_end_ms);
             profile_wall_end = loop_end;
         }
 
