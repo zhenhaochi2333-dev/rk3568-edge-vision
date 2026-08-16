@@ -10,6 +10,7 @@ void run_geometry_tests();
 void run_postprocess_tests();
 void run_visualizer_tests();
 void run_perf_monitor_tests();
+void run_camera_source_tests();
 void run_video_io_tests();
 
 namespace {
@@ -46,8 +47,17 @@ void run_cli_tests()
     assert(!valid.show_help);
     assert(valid.options.conf_threshold == 0.25F);
     assert(valid.options.force);
+    const edgevision::CliParseResult camera = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--camera", "/dev/video0", "--show"});
+    assert(camera.options.camera_path == "/dev/video0");
+    assert(camera.options.input_path.empty());
     expect_error([] { parse({"edge_vision", "--unknown"}); });
     expect_error([] { parse({"edge_vision", "--model"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i",
+                             "--camera", "/dev/video0", "--output", "o"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
+                             "/dev/video0"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--conf", "1.1"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--max-frames", "-1"}); });
 }
@@ -62,6 +72,7 @@ int main()
     run_visualizer_tests();
     run_perf_monitor_tests();
 #if EDGEVISION_WITH_VIDEO
+    run_camera_source_tests();
     run_video_io_tests();
 #endif
     std::cout << "edgevision_tests: PASS\n";

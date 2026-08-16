@@ -57,6 +57,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
             result.options.labels_path = require_value(index, argc, argv, "--labels");
         } else if (option == "--input") {
             result.options.input_path = require_value(index, argc, argv, "--input");
+        } else if (option == "--camera") {
+            result.options.camera_path = require_value(index, argc, argv, "--camera");
         } else if (option == "--output") {
             result.options.output_path = require_value(index, argc, argv, "--output");
         } else if (option == "--conf") {
@@ -77,9 +79,21 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.show_help) {
         return result;
     }
-    if (result.options.model_path.empty() || result.options.labels_path.empty() ||
-        result.options.input_path.empty() || result.options.output_path.empty()) {
-        throw std::runtime_error("--model, --labels, --input, and --output are required");
+    if (result.options.model_path.empty() || result.options.labels_path.empty()) {
+        throw std::runtime_error("--model and --labels are required");
+    }
+    if (!result.options.input_path.empty() && !result.options.camera_path.empty()) {
+        throw std::runtime_error("--input and --camera are mutually exclusive");
+    }
+    if (result.options.input_path.empty() && result.options.camera_path.empty()) {
+        throw std::runtime_error("provide exactly one of --input or --camera");
+    }
+    if (!result.options.camera_path.empty() && result.options.output_path.empty() &&
+        !result.options.show) {
+        throw std::runtime_error("camera mode requires --show or --output");
+    }
+    if (!result.options.input_path.empty() && result.options.output_path.empty()) {
+        throw std::runtime_error("--output is required with --input");
     }
     if (!(result.options.conf_threshold >= 0.0F && result.options.conf_threshold <= 1.0F)) {
         throw std::runtime_error("--conf must be in [0,1]");
@@ -95,7 +109,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
 
 const char* CliParser::usage()
 {
-    return "Usage: edge_vision --model MODEL --labels LABELS --input INPUT --output OUTPUT "
+    return "Usage: edge_vision --model MODEL --labels LABELS "
+           "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--force] [--help]";
 }
 

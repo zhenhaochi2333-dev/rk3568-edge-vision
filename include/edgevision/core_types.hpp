@@ -50,6 +50,7 @@ struct AppOptions {
     std::string model_path;
     std::string labels_path;
     std::string input_path;
+    std::string camera_path;
     std::string output_path;
     float conf_threshold = 0.25F;
     float nms_threshold = 0.45F;

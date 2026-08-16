@@ -38,7 +38,10 @@ set(EDGEVISION_SOURCES
     src/visualizer.cpp
 )
 if(EDGEVISION_WITH_VIDEO)
-    list(APPEND EDGEVISION_SOURCES src/video_io.cpp)
+    list(APPEND EDGEVISION_SOURCES
+        src/camera_source.cpp
+        src/video_io.cpp
+    )
 endif()
 
 add_library(edgevision_core STATIC ${EDGEVISION_SOURCES})
@@ -71,7 +74,10 @@ if(EDGEVISION_BUILD_TESTS)
         tests/test_perf_monitor.cpp
     )
     if(EDGEVISION_WITH_VIDEO)
-        target_sources(edgevision_tests PRIVATE tests/test_video_io.cpp)
+        target_sources(edgevision_tests PRIVATE
+            tests/test_camera_source.cpp
+            tests/test_video_io.cpp
+        )
     endif()
     target_link_libraries(edgevision_tests PRIVATE edgevision_core)
     target_compile_definitions(edgevision_tests PRIVATE EDGEVISION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
