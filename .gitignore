@@ -1,0 +1,36 @@
+# Project-local build and test products
+/build/
+/build-*/
+/output/*
+!/output/.gitkeep
+/deploy/
+
+# Generated RKNN dependency staging; scripts reproduce it from a verified SDK.
+/deps/rknn_runtime_1.6.0/include/rknn_api.h
+/deps/rknn_runtime_1.6.0/lib/
+
+# Board/VM copies and transient logs
+*.log
+*.tmp
+*.core
+*.o
+*.a
+*.so
+*.so.*
+
+# Generated model and large media; publish only after a license audit.
+/models/*.rknn
+/assets/*.mp4
+/assets/*.avi
+/assets/*.mkv
+/benchmarks/
+
+# Local environments and archives
+.venv/
+venv/
+*.tar
+*.tar.gz
+*.zip
+*.ova
+*.vmem
+*.vmdk
