@@ -32,6 +32,7 @@ namespace edgevision {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr const char* kDisplayWindowTitle = "RK3568 EdgeVision";
 
 bool is_regular_file(const std::string& path)
 {
@@ -131,15 +132,20 @@ int run_image(const AppOptions& options, const std::vector<std::string>& labels,
 
     if (options.show) {
 #if EDGEVISION_WITH_VIDEO
-        try {
-            cv::imshow("EdgeVision", output);
-            cv::waitKey(0);
-            cv::destroyAllWindows();
-        } catch (const cv::Exception& error) {
-            log_warn(std::string("GUI unavailable; --show disabled: ") + error.what());
+        if (!gui_available()) {
+            log_warn("Local GUI session unavailable; display disabled");
+        } else {
+            try {
+                cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL);
+                cv::imshow(kDisplayWindowTitle, output);
+                cv::waitKey(0);
+                cv::destroyAllWindows();
+            } catch (const cv::Exception& error) {
+                log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
+            }
         }
 #else
-        log_warn("GUI unavailable; --show disabled");
+        log_warn("Local GUI session unavailable; display disabled");
 #endif
     }
     return 0;
@@ -197,8 +203,17 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
 
     bool preview = options.show;
     if (preview && !gui_available()) {
-        log_warn("GUI unavailable; --show disabled");
+        log_warn("Local GUI session unavailable; display disabled");
         preview = false;
+    }
+
+    if (preview) {
+        try {
+            cv::namedWindow(kDisplayWindowTitle, cv::WINDOW_NORMAL);
+        } catch (const cv::Exception& error) {
+            log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
+            preview = false;
+        }
     }
 
     SignalGuard signal_guard;
@@ -246,13 +261,13 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
 
         if (preview) {
             try {
-                cv::imshow("EdgeVision", output);
+                cv::imshow(kDisplayWindowTitle, output);
                 const int key = cv::waitKey(1);
                 if (key == 27 || key == 'q' || key == 'Q') {
                     g_stop_requested = 1;
                 }
             } catch (const cv::Exception& error) {
-                log_warn(std::string("GUI unavailable; --show disabled: ") + error.what());
+                log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
                 preview = false;
                 cv::destroyAllWindows();
             }
@@ -297,10 +312,6 @@ int run_application(const AppOptions& options)
 {
     validate_options(options);
     const std::vector<std::string> labels = LabelLoader::load(options.labels_path);
-    if (options.show && !gui_available()) {
-        log_warn("GUI unavailable; --show disabled");
-    }
-
     const cv::Mat image = cv::imread(options.input_path, cv::IMREAD_COLOR);
     RknnModel model(options.model_path);
     Yolov5Detector detector(model, options.conf_threshold, options.nms_threshold);

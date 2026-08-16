@@ -64,11 +64,10 @@ void draw_panel(cv::Mat& image, const FrameMetrics& metrics, OverlayMode mode, d
     const cv::Scalar secondary(185, 198, 216);
     int x = panel_rect.x + std::max(7, static_cast<int>(10.0 * scale));
     int y = panel_rect.y + std::max(15, static_cast<int>(19.0 * scale));
-    cv::putText(image, "EdgeVision V1 | YOLOv5", cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
+    cv::putText(image, "RK3568 EdgeVision", cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
                 font, primary, thickness, cv::LINE_AA);
     y += line_height;
-    cv::putText(image, mode == OverlayMode::Video ? "VIDEO | RGB UINT8 NHWC"
-                                                   : "IMAGE | RGB UINT8 NHWC",
+    cv::putText(image, "YOLOv5s INT8 | RK3568 NPU",
                 cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, font * 0.84, secondary,
                 thickness, cv::LINE_AA);
     y += line_height;
