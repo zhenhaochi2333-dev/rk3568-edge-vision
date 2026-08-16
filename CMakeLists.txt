@@ -30,6 +30,7 @@ find_package(Threads REQUIRED)
 set(EDGEVISION_SOURCES
     src/application.cpp
     src/cli_parser.cpp
+    src/display_composer.cpp
     src/image_processor.cpp
     src/iou_tracker.cpp
     src/label_loader.cpp
@@ -70,6 +71,7 @@ if(EDGEVISION_BUILD_TESTS)
     enable_testing()
     add_executable(edgevision_tests
         tests/test_cli.cpp
+        tests/test_display_composer.cpp
         tests/test_geometry.cpp
         tests/test_iou_tracker.cpp
         tests/test_postprocess.cpp
