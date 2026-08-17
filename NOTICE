@@ -2,6 +2,13 @@ EdgeVision references the Rockchip rknn_model_zoo v1.6.0 implementation for
 RKNN API usage, YOLOv5 anchors, strides, output interpretation, decode rules,
 letterbox behavior, NMS semantics, and bbox restoration.
 
+EdgeVision also references the Rockchip rknn_model_zoo v2.3.2 YOLO11 example
+for the YOLO11 output layout, DFL decode, anchor-free grid, and RKNN output
+handling. The referenced rknn_model_zoo source is distributed under Apache
+License 2.0. The optimized YOLO11 model artifact is supplied by the upstream
+example and its separate redistribution terms must be verified before product
+distribution.
+
 The referenced Rockchip source files carry their own Apache License 2.0
 notices. This project does not currently select a root-project LICENSE; the
 final licensing decision is deferred to the V1 release audit.

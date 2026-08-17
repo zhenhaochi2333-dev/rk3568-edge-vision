@@ -68,7 +68,7 @@ void draw_panel(cv::Mat& image, const FrameMetrics& metrics, OverlayMode mode, d
     cv::putText(image, "RK3568 EdgeVision", cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX,
                 font, primary, thickness, cv::LINE_AA);
     y += line_height;
-    cv::putText(image, "YOLOv5s INT8 | RK3568 NPU",
+    cv::putText(image, "YOLO11s INT8 | RK3568 NPU",
                 cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, font * 0.84, secondary,
                 thickness, cv::LINE_AA);
     y += line_height;

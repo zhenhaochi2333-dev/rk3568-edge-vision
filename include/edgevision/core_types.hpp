@@ -53,6 +53,11 @@ struct FrameMetrics {
     double object_count = 0.0;
 };
 
+struct DetectionResult {
+    std::vector<Detection> detections;
+    FrameMetrics metrics;
+};
+
 enum class OverlayMode {
     Image,
     Video,
@@ -87,6 +92,12 @@ struct TensorMeta {
     int quantization = 0;
     std::int32_t zero_point = 0;
     float scale = 1.0F;
+};
+
+struct RawTensorView {
+    const void* data = nullptr;
+    std::size_t size = 0;
+    TensorMeta meta;
 };
 
 }  // namespace edgevision

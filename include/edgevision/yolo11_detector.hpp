@@ -3,14 +3,15 @@
 #include "edgevision/image_processor.hpp"
 #include "edgevision/rknn_model.hpp"
 
-#include <cstddef>
+#include <opencv2/core.hpp>
+
 #include <vector>
 
 namespace edgevision {
 
-class Yolov5Detector {
+class Yolo11Detector {
 public:
-    Yolov5Detector(RknnModel& model, float confidence_threshold, float nms_threshold);
+    Yolo11Detector(RknnModel& model, float confidence_threshold, float nms_threshold);
 
     std::vector<Detection> detect(const cv::Mat& bgr);
     DetectionResult detect_with_metrics(const cv::Mat& bgr);

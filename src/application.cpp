@@ -8,7 +8,7 @@
 #include "edgevision/region_monitor.hpp"
 #include "edgevision/rknn_model.hpp"
 #include "edgevision/visualizer.hpp"
-#include "edgevision/yolov5_detector.hpp"
+#include "edgevision/yolo11_detector.hpp"
 #if EDGEVISION_WITH_VIDEO
 #include "edgevision/camera_source.hpp"
 #include "edgevision/video_io.hpp"
@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
+#include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <memory>
@@ -132,8 +133,31 @@ constexpr int kCameraPreviewWidth = 720;
 constexpr int kCameraPreviewHeight = 405;
 constexpr int kPreviewX = 20;
 constexpr int kPreviewY = 20;
-constexpr int kFullscreenWidth = 800;
-constexpr int kFullscreenHeight = 1280;
+// The X11 desktop is temporarily rotated to the physical panel's landscape
+// logical size. Keep the camera's 16:9 aspect ratio inside this canvas.
+constexpr int kFullscreenWidth = 1280;
+constexpr int kFullscreenHeight = 800;
+
+cv::Mat fit_frame_to_display(const cv::Mat& frame, int width, int height)
+{
+    if (frame.empty() || width <= 0 || height <= 0) {
+        return cv::Mat();
+    }
+
+    const double scale = std::min(static_cast<double>(width) / frame.cols,
+                                  static_cast<double>(height) / frame.rows);
+    const int fitted_width = std::max(1, static_cast<int>(std::lround(frame.cols * scale)));
+    const int fitted_height = std::max(1, static_cast<int>(std::lround(frame.rows * scale)));
+
+    cv::Mat fitted;
+    cv::resize(frame, fitted, cv::Size(fitted_width, fitted_height), 0.0, 0.0,
+               cv::INTER_LINEAR);
+    cv::Mat canvas(height, width, frame.type(), cv::Scalar::all(0));
+    const int offset_x = (width - fitted_width) / 2;
+    const int offset_y = (height - fitted_height) / 2;
+    fitted.copyTo(canvas(cv::Rect(offset_x, offset_y, fitted_width, fitted_height)));
+    return canvas;
+}
 
 void configure_display_window(int width, int height, bool fullscreen)
 {
@@ -170,7 +194,7 @@ void log_image_metrics(const FrameMetrics& metrics)
 }
 
 int run_image(const AppOptions& options, const std::vector<std::string>& labels,
-              Yolov5Detector& detector, const Visualizer& visualizer, const cv::Mat& image)
+              Yolo11Detector& detector, const Visualizer& visualizer, const cv::Mat& image)
 {
     const auto e2e_start = Clock::now();
     const DetectionResult result = detector.detect_with_metrics(image);
@@ -288,7 +312,7 @@ struct SmoothDetectionSnapshot {
 
 class SmoothAiWorker {
 public:
-    SmoothAiWorker(Yolov5Detector& detector, const NormalizedRoi* roi)
+    SmoothAiWorker(Yolo11Detector& detector, const NormalizedRoi* roi)
         : detector_(detector),
           region_monitor_(roi == nullptr
                               ? nullptr
@@ -431,7 +455,7 @@ private:
         }
     }
 
-    Yolov5Detector& detector_;
+    Yolo11Detector& detector_;
     IouTracker tracker_;
     std::unique_ptr<RegionMonitor> region_monitor_;
     mutable std::mutex mutex_;
@@ -463,7 +487,7 @@ void verify_video_output(const VideoWriterInfo& info)
     }
 }
 
-int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
+int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                       const std::vector<std::string>& labels)
 {
     if (!gui_available()) {
@@ -651,7 +675,7 @@ int run_smooth_camera(const AppOptions& options, Yolov5Detector& detector,
     return 0;
 }
 
-int run_video(const AppOptions& options, Yolov5Detector& detector, const Visualizer& visualizer)
+int run_video(const AppOptions& options, Yolo11Detector& detector, const Visualizer& visualizer)
 {
     VideoIO video;
     video.open_input(options.input_path);
@@ -769,7 +793,7 @@ int run_video(const AppOptions& options, Yolov5Detector& detector, const Visuali
     return 0;
 }
 
-int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visualizer& visualizer)
+int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visualizer& visualizer)
 {
     bool preview = options.show;
     if (preview && !gui_available()) {
@@ -895,13 +919,12 @@ int run_camera(const AppOptions& options, Yolov5Detector& detector, const Visual
                     cv::resize(output_frame, preview_frame,
                                cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
                                cv::INTER_AREA);
+                } else {
+                    preview_frame = fit_frame_to_display(output_frame, kFullscreenWidth,
+                                                         kFullscreenHeight);
                 }
                 const auto display_start = Clock::now();
-                if (options.fullscreen) {
-                    cv::imshow(kDisplayWindowTitle, output_frame);
-                } else {
-                    cv::imshow(kDisplayWindowTitle, preview_frame);
-                }
+                cv::imshow(kDisplayWindowTitle, preview_frame);
                 const int key = cv::waitKey(1);
                 display_ms =
                     std::chrono::duration<double, std::milli>(Clock::now() - display_start).count();
@@ -1004,7 +1027,7 @@ int run_application(const AppOptions& options)
     validate_options(options);
     const std::vector<std::string> labels = LabelLoader::load(options.labels_path);
     RknnModel model(options.model_path);
-    Yolov5Detector detector(model, options.conf_threshold, options.nms_threshold);
+    Yolo11Detector detector(model, options.conf_threshold, options.nms_threshold);
     const Visualizer visualizer(labels);
 
     if (!options.camera_path.empty()) {

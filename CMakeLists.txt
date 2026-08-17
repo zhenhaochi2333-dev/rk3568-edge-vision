@@ -38,7 +38,7 @@ set(EDGEVISION_SOURCES
     src/perf_monitor.cpp
     src/region_monitor.cpp
     src/rknn_model.cpp
-    src/yolov5_detector.cpp
+    src/yolo11_detector.cpp
     src/visualizer.cpp
 )
 if(EDGEVISION_WITH_VIDEO)
@@ -70,12 +70,23 @@ set_target_properties(edge_vision PROPERTIES
 
 if(EDGEVISION_BUILD_TESTS)
     enable_testing()
+    add_library(edgevision_yolov5_legacy STATIC src/yolov5_detector.cpp)
+    target_include_directories(edgevision_yolov5_legacy
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${RKNN_INCLUDE_DIR}"
+            "${OpenCV_INCLUDE_DIRS}"
+    )
+    target_link_libraries(edgevision_yolov5_legacy PUBLIC edgevision_core)
+    target_compile_options(edgevision_yolov5_legacy PRIVATE -Wall -Wextra -Wpedantic)
+
     add_executable(edgevision_tests
         tests/test_cli.cpp
         tests/test_display_composer.cpp
         tests/test_geometry.cpp
         tests/test_iou_tracker.cpp
         tests/test_postprocess.cpp
+        tests/test_yolo11_postprocess.cpp
         tests/test_region_monitor.cpp
         tests/test_visualizer.cpp
         tests/test_perf_monitor.cpp
@@ -86,7 +97,7 @@ if(EDGEVISION_BUILD_TESTS)
             tests/test_video_io.cpp
         )
     endif()
-    target_link_libraries(edgevision_tests PRIVATE edgevision_core)
+    target_link_libraries(edgevision_tests PRIVATE edgevision_core edgevision_yolov5_legacy)
     target_compile_definitions(edgevision_tests PRIVATE EDGEVISION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME edgevision_tests COMMAND edgevision_tests)
 endif()

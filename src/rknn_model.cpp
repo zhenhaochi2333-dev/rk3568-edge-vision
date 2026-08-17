@@ -133,9 +133,10 @@ void RknnModel::query_metadata()
     if (ret != RKNN_SUCC) {
         throw std::runtime_error("RKNN_QUERY_IN_OUT_NUM failed with ret=" + std::to_string(ret));
     }
-    if (io_num.n_input != 1U || io_num.n_output != 3U) {
-        throw std::runtime_error("expected one input and three YOLOv5 outputs, got " +
-                                 std::to_string(io_num.n_input) + " and " + std::to_string(io_num.n_output));
+    if (io_num.n_input != 1U || io_num.n_output == 0U) {
+        throw std::runtime_error("expected one input and at least one output, got " +
+                                 std::to_string(io_num.n_input) + " and " +
+                                 std::to_string(io_num.n_output));
     }
 
     input_metas_.reserve(io_num.n_input);
@@ -165,7 +166,7 @@ void RknnModel::query_metadata()
     const TensorMeta& input = input_metas_.front();
     if (input.format != static_cast<int>(RKNN_TENSOR_NHWC) || input.dims.size() != 4U ||
         input.dims[0] != 1U || input.dims[3] != 3U) {
-        throw std::runtime_error("model input metadata is not the expected single RGB NHWC tensor");
+        throw std::runtime_error("model input metadata is not the supported single RGB NHWC tensor");
     }
     model_height_ = static_cast<int>(input.dims[1]);
     model_width_ = static_cast<int>(input.dims[2]);

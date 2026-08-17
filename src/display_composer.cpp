@@ -129,7 +129,7 @@ const cv::Mat& DisplayComposer::compose(const cv::Mat& bgr,
     canvas_.setTo(kBackground);
     cv::rectangle(canvas_, cv::Rect(0, 0, kCanvasWidth, 72), cv::Scalar(22, 28, 37), cv::FILLED);
     draw_text("RK3568 EdgeVision", 24, 31, 0.82, kPrimary, 1);
-    draw_text("YOLOv5s INT8 | RK3568 NPU", 24, 58, 0.54, kSecondary, 1);
+    draw_text("YOLO11s INT8 | RK3568 NPU", 24, 58, 0.54, kSecondary, 1);
     draw_camera(bgr, detections, roi);
 
     draw_section(558, 735, "LIVE METRICS");
