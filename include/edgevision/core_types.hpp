@@ -49,7 +49,7 @@ struct FrameMetrics {
     double display_fps = 0.0;
     double detection_fps = 0.0;
     double ai_latency_ms = 0.0;
-    double result_age_ms = 0.0;
+    double display_result_age_ms = 0.0;
     double object_count = 0.0;
 };
 

@@ -597,11 +597,11 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             display_metrics.detection_fps =
                 elapsed_s > 0.0 ? static_cast<double>(completed_inferences) / elapsed_s : 0.0;
             if (latest_result_finished != Clock::time_point{}) {
-                display_metrics.result_age_ms =
+                display_metrics.display_result_age_ms =
                     std::chrono::duration<double, std::milli>(display_now - latest_result_finished)
                         .count();
-                result_age_sum_ms += display_metrics.result_age_ms;
-                result_age_max_ms = std::max(result_age_max_ms, display_metrics.result_age_ms);
+                result_age_sum_ms += display_metrics.display_result_age_ms;
+                result_age_max_ms = std::max(result_age_max_ms, display_metrics.display_result_age_ms);
                 ++result_age_samples;
             }
 
@@ -666,8 +666,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
              " completed_inferences=" + std::to_string(completed_inferences) +
              " display_fps=" + std::to_string(display_fps) +
              " detection_fps=" + std::to_string(detection_fps) +
-             " result_age_avg=" + std::to_string(average_result_age) +
-             " ms result_age_max=" + std::to_string(result_age_max_ms) + " ms");
+             " display_result_age_avg=" + std::to_string(average_result_age) +
+             " ms display_result_age_max=" + std::to_string(result_age_max_ms) + " ms");
     log_perf("smooth camera inference=" + std::to_string(latest_metrics.inference_ms) +
              " ms ai_latency=" + std::to_string(latest_metrics.ai_latency_ms) +
              " ms display_fps=" + std::to_string(display_fps) +
