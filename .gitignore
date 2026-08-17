@@ -4,6 +4,7 @@
 /output/*
 !/output/.gitkeep
 /deploy/
+/lib/
 
 # Generated RKNN dependency staging; scripts reproduce it from a verified SDK.
 /deps/rknn_runtime_1.6.0/include/rknn_api.h

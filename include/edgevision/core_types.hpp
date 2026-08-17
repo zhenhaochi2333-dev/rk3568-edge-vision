@@ -58,12 +58,6 @@ struct DetectionResult {
     FrameMetrics metrics;
 };
 
-enum class OverlayMode {
-    Image,
-    Video,
-    SmoothVideo,
-};
-
 struct AppOptions {
     std::string model_path;
     std::string labels_path;
@@ -78,6 +72,7 @@ struct AppOptions {
     bool smooth_preview = false;
     bool force = false;
     bool roi_enabled = false;
+    bool show_roi = false;
     NormalizedRoi roi;
 };
 

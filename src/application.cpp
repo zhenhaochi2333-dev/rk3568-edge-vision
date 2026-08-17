@@ -7,7 +7,6 @@
 #include "edgevision/perf_monitor.hpp"
 #include "edgevision/region_monitor.hpp"
 #include "edgevision/rknn_model.hpp"
-#include "edgevision/visualizer.hpp"
 #include "edgevision/yolo11_detector.hpp"
 #if EDGEVISION_WITH_VIDEO
 #include "edgevision/camera_source.hpp"
@@ -120,44 +119,16 @@ std::string format_detection(const Detection& detection, const std::vector<std::
     return line.str();
 }
 
+#if EDGEVISION_WITH_VIDEO
+
 bool gui_available()
 {
     return std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
 }
 
-#if EDGEVISION_WITH_VIDEO
 
-constexpr int kPreviewWidth = 640;
-constexpr int kPreviewHeight = 640;
-constexpr int kCameraPreviewWidth = 720;
-constexpr int kCameraPreviewHeight = 405;
 constexpr int kPreviewX = 20;
 constexpr int kPreviewY = 20;
-// The X11 desktop is temporarily rotated to the physical panel's landscape
-// logical size. Keep the camera's 16:9 aspect ratio inside this canvas.
-constexpr int kFullscreenWidth = 1280;
-constexpr int kFullscreenHeight = 800;
-
-cv::Mat fit_frame_to_display(const cv::Mat& frame, int width, int height)
-{
-    if (frame.empty() || width <= 0 || height <= 0) {
-        return cv::Mat();
-    }
-
-    const double scale = std::min(static_cast<double>(width) / frame.cols,
-                                  static_cast<double>(height) / frame.rows);
-    const int fitted_width = std::max(1, static_cast<int>(std::lround(frame.cols * scale)));
-    const int fitted_height = std::max(1, static_cast<int>(std::lround(frame.rows * scale)));
-
-    cv::Mat fitted;
-    cv::resize(frame, fitted, cv::Size(fitted_width, fitted_height), 0.0, 0.0,
-               cv::INTER_LINEAR);
-    cv::Mat canvas(height, width, frame.type(), cv::Scalar::all(0));
-    const int offset_x = (width - fitted_width) / 2;
-    const int offset_y = (height - fitted_height) / 2;
-    fitted.copyTo(canvas(cv::Rect(offset_x, offset_y, fitted_width, fitted_height)));
-    return canvas;
-}
 
 void configure_display_window(int width, int height, bool fullscreen)
 {
@@ -165,7 +136,8 @@ void configure_display_window(int width, int height, bool fullscreen)
     if (fullscreen) {
         cv::setWindowProperty(kDisplayWindowTitle, cv::WND_PROP_FULLSCREEN,
                               cv::WINDOW_FULLSCREEN);
-        cv::resizeWindow(kDisplayWindowTitle, kFullscreenWidth, kFullscreenHeight);
+        cv::resizeWindow(kDisplayWindowTitle, DisplayComposer::kDefaultDisplayWidth,
+                         DisplayComposer::kDefaultDisplayHeight);
         return;
     }
     cv::resizeWindow(kDisplayWindowTitle, width, height);
@@ -194,19 +166,19 @@ void log_image_metrics(const FrameMetrics& metrics)
 }
 
 int run_image(const AppOptions& options, const std::vector<std::string>& labels,
-              Yolo11Detector& detector, const Visualizer& visualizer, const cv::Mat& image)
+              Yolo11Detector& detector, const cv::Mat& image)
 {
     const auto e2e_start = Clock::now();
     const DetectionResult result = detector.detect_with_metrics(image);
     FrameMetrics metrics = result.metrics;
     metrics.object_count = static_cast<double>(result.detections.size());
 
-    const auto visualization_start = Clock::now();
-    cv::Mat output = image.clone();
-    visualizer.draw(output, result.detections, metrics, OverlayMode::Image);
+    DisplayComposer composer(labels);
+    const cv::Mat& output = composer.compose(image, result.detections);
     const auto visualization_end = Clock::now();
-    metrics.visualization_ms =
-        std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
+    const DisplayComposeTimings& compose_timings = composer.last_timings();
+    metrics.visualization_ms = compose_timings.crop_resize_ms + compose_timings.overlay_ms +
+                              compose_timings.toast_ms;
     metrics.end_to_end_ms =
         std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
 
@@ -226,7 +198,9 @@ int run_image(const AppOptions& options, const std::vector<std::string>& labels,
             log_warn("Local GUI session unavailable; display disabled");
         } else {
             try {
-                configure_display_window(kPreviewWidth, kPreviewHeight, options.fullscreen);
+                configure_display_window(DisplayComposer::kDefaultDisplayWidth,
+                                         DisplayComposer::kDefaultDisplayHeight,
+                                         options.fullscreen);
                 cv::imshow(kDisplayWindowTitle, output);
                 wait_for_image_preview();
                 cv::destroyWindow(kDisplayWindowTitle);
@@ -298,6 +272,34 @@ public:
 
 private:
     void (*previous_)(int) = SIG_DFL;
+};
+
+struct RealtimeDisplayProfileTotals {
+    double camera_read_ms = 0.0;
+    double snapshot_copy_ms = 0.0;
+    double crop_resize_ms = 0.0;
+    double overlay_ms = 0.0;
+    double toast_ms = 0.0;
+    double imshow_ms = 0.0;
+    double wait_key_ms = 0.0;
+    double other_ms = 0.0;
+    double full_loop_ms = 0.0;
+    std::size_t frames = 0U;
+
+    void add(double camera_read, double snapshot_copy, double crop_resize, double overlay,
+             double toast, double imshow, double wait_key, double other, double full_loop)
+    {
+        camera_read_ms += camera_read;
+        snapshot_copy_ms += snapshot_copy;
+        crop_resize_ms += crop_resize;
+        overlay_ms += overlay;
+        toast_ms += toast;
+        imshow_ms += imshow;
+        wait_key_ms += wait_key;
+        other_ms += other;
+        full_loop_ms += full_loop;
+        ++frames;
+    }
 };
 
 struct SmoothDetectionSnapshot {
@@ -504,8 +506,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
 
     bool window_ready = false;
     try {
-        configure_display_window(options.fullscreen ? DisplayComposer::kCanvasWidth : 400,
-                                 options.fullscreen ? DisplayComposer::kCanvasHeight : 640,
+        configure_display_window(DisplayComposer::kDefaultDisplayWidth,
+                                 DisplayComposer::kDefaultDisplayHeight,
                                  options.fullscreen);
         window_ready = true;
     } catch (const cv::Exception& error) {
@@ -518,9 +520,9 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     DisplayComposer composer(labels);
     const NormalizedRoi* active_roi = options.roi_enabled ? &options.roi : nullptr;
     cv::Mat frame;
-    cv::Mat preview_frame;
     std::vector<Detection> latest_detections;
     RegionSnapshot latest_region;
+    std::vector<RegionEvent> latest_new_events;
     FrameMetrics latest_metrics;
     Clock::time_point latest_result_finished{};
     std::uint64_t frame_id = 0U;
@@ -533,6 +535,10 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     std::size_t result_age_samples = 0U;
     double result_age_sum_ms = 0.0;
     double result_age_max_ms = 0.0;
+    RealtimeDisplayProfileTotals display_profile;
+    bool display_profile_started = false;
+    Clock::time_point display_profile_wall_start{};
+    Clock::time_point display_profile_wall_end{};
     std::string error_message;
     const auto wall_start = Clock::now();
 
@@ -547,9 +553,11 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
 
     try {
         while (!g_stop_requested) {
+            const Clock::time_point loop_start = Clock::now();
             if (worker.failed(error_message)) {
                 throw std::runtime_error("smooth-preview AI worker failed: " + error_message);
             }
+            const Clock::time_point camera_read_start = Clock::now();
             if (!camera.read(frame)) {
                 ++consecutive_read_failures;
                 if (displayed_frames == 0U) {
@@ -560,6 +568,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 }
                 continue;
             }
+            const double camera_read_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - camera_read_start).count();
             consecutive_read_failures = 0U;
             if (frame.cols != 1280 || frame.rows != 720 || frame.type() != CV_8UC3) {
                 throw std::runtime_error("smooth-preview camera frame must be 1280x720 BGR CV_8UC3");
@@ -568,15 +578,19 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             ++frame_id;
             const Clock::time_point captured_at = Clock::now();
             SmoothDetectionSnapshot snapshot;
+            const Clock::time_point snapshot_copy_start = Clock::now();
             if (worker.copy_latest(snapshot) && snapshot.generation != last_generation) {
                 completed_inferences +=
                     static_cast<std::size_t>(snapshot.generation - last_generation);
                 last_generation = snapshot.generation;
                 latest_detections = snapshot.detections;
                 latest_region = snapshot.region;
+                latest_new_events = snapshot.region.new_events;
                 latest_metrics = snapshot.metrics;
                 latest_result_finished = snapshot.finished_at;
             }
+            const double snapshot_copy_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - snapshot_copy_start).count();
             if (worker.failed(error_message)) {
                 throw std::runtime_error("smooth-preview AI worker failed: " + error_message);
             }
@@ -605,24 +619,24 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 ++result_age_samples;
             }
 
-            const auto visualization_start = Clock::now();
-            const cv::Mat& dashboard = composer.compose(
-                frame, latest_detections, display_metrics, latest_region.occupancy,
-                active_roi, latest_region.recent_events);
-            const auto visualization_end = Clock::now();
-            display_metrics.visualization_ms =
-                std::chrono::duration<double, std::milli>(visualization_end - visualization_start)
-                    .count();
+            const cv::Mat& composed = composer.compose(
+                frame, latest_detections, latest_new_events, active_roi, options.show_roi);
+            latest_new_events.clear();
+            const DisplayComposeTimings& compose_timings = composer.last_timings();
+            display_metrics.visualization_ms = compose_timings.crop_resize_ms +
+                                               compose_timings.overlay_ms + compose_timings.toast_ms;
 
+            double imshow_ms = 0.0;
+            double wait_key_ms = 0.0;
             try {
-                if (options.fullscreen) {
-                    cv::imshow(kDisplayWindowTitle, dashboard);
-                } else {
-                    cv::resize(dashboard, preview_frame, cv::Size(400, 640), 0.0, 0.0,
-                               cv::INTER_AREA);
-                    cv::imshow(kDisplayWindowTitle, preview_frame);
-                }
+                const Clock::time_point imshow_start = Clock::now();
+                cv::imshow(kDisplayWindowTitle, composed);
+                imshow_ms =
+                    std::chrono::duration<double, std::milli>(Clock::now() - imshow_start).count();
+                const Clock::time_point wait_key_start = Clock::now();
                 const int key = cv::waitKey(1);
+                wait_key_ms =
+                    std::chrono::duration<double, std::milli>(Clock::now() - wait_key_start).count();
                 if (key == 27 || key == 'q' || key == 'Q') {
                     g_stop_requested = 1;
                 }
@@ -630,6 +644,26 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 throw std::runtime_error(std::string("smooth-preview display failed: ") + error.what());
             }
             ++displayed_frames;
+
+            const auto loop_end = Clock::now();
+            const double loop_ms =
+                std::chrono::duration<double, std::milli>(loop_end - loop_start).count();
+            if (displayed_frames > kCameraWarmupFrames) {
+                if (!display_profile_started) {
+                    display_profile_started = true;
+                    display_profile_wall_start = loop_start;
+                }
+                const double composition_ms = compose_timings.crop_resize_ms +
+                                              compose_timings.overlay_ms + compose_timings.toast_ms;
+                const double other_ms = std::max(
+                    0.0, loop_ms - camera_read_ms - snapshot_copy_ms - composition_ms -
+                              imshow_ms - wait_key_ms);
+                display_profile.add(camera_read_ms, snapshot_copy_ms,
+                                    compose_timings.crop_resize_ms, compose_timings.overlay_ms,
+                                    compose_timings.toast_ms, imshow_ms, wait_key_ms,
+                                    other_ms, loop_ms);
+                display_profile_wall_end = loop_end;
+            }
 
             if (options.max_frames > 0 &&
                 displayed_frames >= static_cast<std::size_t>(options.max_frames)) {
@@ -672,10 +706,34 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
              " ms ai_latency=" + std::to_string(latest_metrics.ai_latency_ms) +
              " ms display_fps=" + std::to_string(display_fps) +
              " detection_fps=" + std::to_string(detection_fps));
+    if (display_profile.frames > 0U) {
+        const double count = static_cast<double>(display_profile.frames);
+        const double profile_elapsed =
+            std::chrono::duration<double>(display_profile_wall_end - display_profile_wall_start)
+                .count();
+        const double profile_fps = profile_elapsed > 0.0
+                                       ? static_cast<double>(display_profile.frames) / profile_elapsed
+                                       : 0.0;
+        log_perf("smooth display profile measured_frames=" +
+                 std::to_string(display_profile.frames) +
+                 " camera_read=" + std::to_string(display_profile.camera_read_ms / count) +
+                 " ms snapshot_copy=" + std::to_string(display_profile.snapshot_copy_ms / count) +
+                 " ms crop_resize=" + std::to_string(display_profile.crop_resize_ms / count) +
+                 " ms overlay=" + std::to_string(display_profile.overlay_ms / count) +
+                 " ms toast=" + std::to_string(display_profile.toast_ms / count) +
+                 " ms imshow=" + std::to_string(display_profile.imshow_ms / count) +
+                 " ms waitKey=" + std::to_string(display_profile.wait_key_ms / count) +
+                 " ms other=" + std::to_string(display_profile.other_ms / count) +
+                 " ms full_loop=" + std::to_string(display_profile.full_loop_ms / count) +
+                 " ms display_fps=" + std::to_string(profile_fps));
+    } else {
+        log_warn("smooth display profile has no measured frames; increase --max-frames beyond warmup");
+    }
     return 0;
 }
 
-int run_video(const AppOptions& options, Yolo11Detector& detector, const Visualizer& visualizer)
+int run_video(const AppOptions& options, Yolo11Detector& detector,
+              const std::vector<std::string>& labels)
 {
     VideoIO video;
     video.open_input(options.input_path);
@@ -692,7 +750,9 @@ int run_video(const AppOptions& options, Yolo11Detector& detector, const Visuali
 
     if (preview) {
         try {
-            configure_display_window(kPreviewWidth, kPreviewHeight, options.fullscreen);
+            configure_display_window(DisplayComposer::kDefaultDisplayWidth,
+                                     DisplayComposer::kDefaultDisplayHeight,
+                                     options.fullscreen);
         } catch (const cv::Exception& error) {
             log_warn(std::string("Local GUI session unavailable; display disabled: ") + error.what());
             preview = false;
@@ -704,44 +764,31 @@ int run_video(const AppOptions& options, Yolo11Detector& detector, const Visuali
     cv::Mat frame;
     std::size_t processed = 0U;
     const auto wall_start = Clock::now();
-    FrameMetrics previous_overlay_metrics;
-    bool have_previous_overlay_metrics = false;
+    DisplayComposer composer(labels);
     while (!g_stop_requested && video.read(frame)) {
         if (frame.empty()) {
             continue;
         }
+        const auto e2e_start = Clock::now();
+        const DetectionResult result = detector.detect_with_metrics(frame);
+        FrameMetrics metrics = result.metrics;
+        metrics.object_count = static_cast<double>(result.detections.size());
+        const cv::Mat& output = composer.compose(frame, result.detections);
+        const DisplayComposeTimings& compose_timings = composer.last_timings();
+        const auto visualization_end = Clock::now();
+        metrics.visualization_ms = compose_timings.crop_resize_ms + compose_timings.overlay_ms +
+                                  compose_timings.toast_ms;
+        metrics.end_to_end_ms =
+            std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
         if (!video.output_open()) {
             video.open_output(options.output_path, source.fps > 0.0 ? source.fps : 30.0,
-                              frame.size(), options.force);
+                              output.size(), options.force);
             const VideoWriterInfo& info = video.writer_info();
             log_info("video output requested=" + info.requested_path + " actual=" + info.actual_path +
                      " codec=" + info.codec + " fps=" + std::to_string(info.fps) +
                      " resolution=" + std::to_string(info.resolution.width) + "x" +
                      std::to_string(info.resolution.height));
         }
-
-        const auto e2e_start = Clock::now();
-        const DetectionResult result = detector.detect_with_metrics(frame);
-        FrameMetrics metrics = result.metrics;
-        metrics.object_count = static_cast<double>(result.detections.size());
-        FrameMetrics overlay_metrics = metrics;
-        if (have_previous_overlay_metrics) {
-            overlay_metrics.visualization_ms = previous_overlay_metrics.visualization_ms;
-            overlay_metrics.end_to_end_ms = previous_overlay_metrics.end_to_end_ms;
-        }
-        const auto visualization_start = Clock::now();
-        const double before_draw_s =
-            std::chrono::duration<double>(visualization_start - wall_start).count();
-        metrics.fps = before_draw_s > 0.0 ? static_cast<double>(processed + 1U) / before_draw_s : 0.0;
-        cv::Mat output = frame.clone();
-        visualizer.draw(output, result.detections, overlay_metrics, OverlayMode::Video);
-        const auto visualization_end = Clock::now();
-        metrics.visualization_ms =
-            std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
-        metrics.end_to_end_ms =
-            std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
-        previous_overlay_metrics = metrics;
-        have_previous_overlay_metrics = true;
         video.write(output);
         ++processed;
         const double elapsed = std::chrono::duration<double>(Clock::now() - wall_start).count();
@@ -793,7 +840,8 @@ int run_video(const AppOptions& options, Yolo11Detector& detector, const Visuali
     return 0;
 }
 
-int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visualizer& visualizer)
+int run_camera(const AppOptions& options, Yolo11Detector& detector,
+               const std::vector<std::string>& labels)
 {
     bool preview = options.show;
     if (preview && !gui_available()) {
@@ -814,7 +862,9 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visual
 
     if (preview) {
         try {
-            configure_display_window(kCameraPreviewWidth, kCameraPreviewHeight, options.fullscreen);
+            configure_display_window(DisplayComposer::kDefaultDisplayWidth,
+                                     DisplayComposer::kDefaultDisplayHeight,
+                                     options.fullscreen);
         } catch (const cv::Exception& error) {
             log_warn(std::string("Local GUI session unavailable; camera preview disabled: ") +
                      error.what());
@@ -838,8 +888,12 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visual
     bool profile_started = false;
     Clock::time_point profile_wall_start{};
     Clock::time_point profile_wall_end{};
-    FrameMetrics previous_overlay_metrics;
-    bool have_previous_overlay_metrics = false;
+    DisplayComposer composer(labels);
+    IouTracker tracker;
+    std::unique_ptr<RegionMonitor> region_monitor;
+    if (options.roi_enabled) {
+        region_monitor.reset(new RegionMonitor(options.roi));
+    }
 
     while (!g_stop_requested) {
         const auto loop_start = Clock::now();
@@ -866,9 +920,30 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visual
                                      std::to_string(frame.type()));
         }
 
+        const auto e2e_start = Clock::now();
+        const auto captured_at = Clock::now();
+        const DetectionResult result = detector.detect_with_metrics(frame);
+        const std::vector<Detection> tracked_detections = tracker.update(result.detections);
+        RegionSnapshot region;
+        if (region_monitor != nullptr) {
+            region = region_monitor->update(tracked_detections, captured_at,
+                                            frame.cols, frame.rows);
+        }
+        FrameMetrics metrics = result.metrics;
+        metrics.object_count = static_cast<double>(tracked_detections.size());
+        metrics.fps = static_cast<double>(processed + 1U);
+        const cv::Mat& output_frame = composer.compose(
+            frame, tracked_detections, region.new_events,
+            options.roi_enabled ? &options.roi : nullptr, options.show_roi);
+        const DisplayComposeTimings& compose_timings = composer.last_timings();
+        const auto visualization_end = Clock::now();
+        metrics.visualization_ms = compose_timings.crop_resize_ms + compose_timings.overlay_ms +
+                                  compose_timings.toast_ms;
+        metrics.end_to_end_ms =
+            std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
         if (record_output && !output.output_open()) {
             output.open_output(options.output_path, source.fps > 0.0 ? source.fps : 30.0,
-                               frame.size(), options.force);
+                               output_frame.size(), options.force);
             const VideoWriterInfo& info = output.writer_info();
             log_info("camera output requested=" + info.requested_path +
                      " actual=" + info.actual_path + " codec=" + info.codec +
@@ -876,29 +951,6 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visual
                      std::to_string(info.resolution.width) + "x" +
                      std::to_string(info.resolution.height));
         }
-
-        const auto e2e_start = Clock::now();
-        const DetectionResult result = detector.detect_with_metrics(frame);
-        FrameMetrics metrics = result.metrics;
-        metrics.object_count = static_cast<double>(result.detections.size());
-        FrameMetrics overlay_metrics = metrics;
-        if (have_previous_overlay_metrics) {
-            overlay_metrics.visualization_ms = previous_overlay_metrics.visualization_ms;
-            overlay_metrics.end_to_end_ms = previous_overlay_metrics.end_to_end_ms;
-        }
-        const auto visualization_start = Clock::now();
-        const double before_draw_s =
-            std::chrono::duration<double>(visualization_start - wall_start).count();
-        metrics.fps = before_draw_s > 0.0 ? static_cast<double>(processed + 1U) / before_draw_s : 0.0;
-        cv::Mat output_frame = frame.clone();
-        visualizer.draw(output_frame, result.detections, overlay_metrics, OverlayMode::Video);
-        const auto visualization_end = Clock::now();
-        metrics.visualization_ms =
-            std::chrono::duration<double, std::milli>(visualization_end - visualization_start).count();
-        metrics.end_to_end_ms =
-            std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
-        previous_overlay_metrics = metrics;
-        have_previous_overlay_metrics = true;
         double writer_ms = 0.0;
         if (record_output) {
             const auto writer_start = Clock::now();
@@ -914,17 +966,8 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector, const Visual
         double display_ms = 0.0;
         if (preview) {
             try {
-                cv::Mat preview_frame;
-                if (!options.fullscreen) {
-                    cv::resize(output_frame, preview_frame,
-                               cv::Size(kCameraPreviewWidth, kCameraPreviewHeight), 0.0, 0.0,
-                               cv::INTER_AREA);
-                } else {
-                    preview_frame = fit_frame_to_display(output_frame, kFullscreenWidth,
-                                                         kFullscreenHeight);
-                }
                 const auto display_start = Clock::now();
-                cv::imshow(kDisplayWindowTitle, preview_frame);
+                cv::imshow(kDisplayWindowTitle, output_frame);
                 const int key = cv::waitKey(1);
                 display_ms =
                     std::chrono::duration<double, std::milli>(Clock::now() - display_start).count();
@@ -1028,14 +1071,13 @@ int run_application(const AppOptions& options)
     const std::vector<std::string> labels = LabelLoader::load(options.labels_path);
     RknnModel model(options.model_path);
     Yolo11Detector detector(model, options.conf_threshold, options.nms_threshold);
-    const Visualizer visualizer(labels);
 
     if (!options.camera_path.empty()) {
 #if EDGEVISION_WITH_VIDEO
         if (options.smooth_preview) {
             return run_smooth_camera(options, detector, labels);
         }
-        return run_camera(options, detector, visualizer);
+        return run_camera(options, detector, labels);
 #else
         throw std::runtime_error("camera mode requires video support in the build");
 #endif
@@ -1043,11 +1085,11 @@ int run_application(const AppOptions& options)
 
     const cv::Mat image = cv::imread(options.input_path, cv::IMREAD_COLOR);
     if (!image.empty()) {
-        return run_image(options, labels, detector, visualizer, image);
+        return run_image(options, labels, detector, image);
     }
 
 #if EDGEVISION_WITH_VIDEO
-    return run_video(options, detector, visualizer);
+    return run_video(options, detector, labels);
 #else
     throw std::runtime_error("input is not a readable image and video support is not built: " +
                              options.input_path);

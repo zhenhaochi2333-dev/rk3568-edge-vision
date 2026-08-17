@@ -99,6 +99,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
         } else if (option == "--roi") {
             result.options.roi = parse_roi(require_value(index, argc, argv, "--roi"));
             result.options.roi_enabled = true;
+        } else if (option == "--show-roi") {
+            result.options.show_roi = true;
         } else if (option == "--force") {
             result.options.force = true;
         } else {
@@ -149,6 +151,9 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.roi_enabled && !result.options.smooth_preview) {
         throw std::runtime_error("--roi requires --smooth-preview");
     }
+    if (result.options.show_roi && !result.options.roi_enabled) {
+        throw std::runtime_error("--show-roi requires --roi");
+    }
     return result;
 }
 
@@ -157,7 +162,7 @@ const char* CliParser::usage()
     return "Usage: edge_vision --model MODEL --labels LABELS "
            "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
-           "[--smooth-preview] [--roi X,Y,W,H] [--force] [--help]";
+           "[--smooth-preview] [--roi X,Y,W,H] [--show-roi] [--force] [--help]";
 }
 
 }  // namespace edgevision

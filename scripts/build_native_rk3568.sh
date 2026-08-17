@@ -20,6 +20,11 @@ if [[ ! -f "${RKNN_LIBRARY}" ]]; then
     fi
 fi
 
+# Runtime deployment is project-local. The executable RPATH is $ORIGIN/lib;
+# never replace the board's /lib or /usr/lib installation.
+mkdir -p "${SOURCE_ROOT}/lib"
+cp "${RKNN_LIBRARY}" "${SOURCE_ROOT}/lib/librknnrt.so"
+
 cmake -S "${SOURCE_ROOT}" -B "${BUILD_ROOT}" \
     -DRKNN_INCLUDE_DIR="${RKNN_INCLUDE}" \
     -DRKNN_LIBRARY="${RKNN_LIBRARY}" \

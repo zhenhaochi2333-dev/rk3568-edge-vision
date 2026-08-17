@@ -8,10 +8,8 @@
 
 void run_geometry_tests();
 void run_display_composer_tests();
-void run_postprocess_tests();
 void run_yolo11_postprocess_tests();
 void run_iou_tracker_tests();
-void run_visualizer_tests();
 void run_region_monitor_tests();
 void run_perf_monitor_tests();
 void run_camera_source_tests();
@@ -54,12 +52,13 @@ void run_cli_tests()
     const edgevision::CliParseResult camera = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
         "--camera", "/dev/video0", "--show", "--fullscreen", "--smooth-preview",
-        "--roi", "0.25,0.20,0.50,0.60"});
+        "--roi", "0.25,0.20,0.50,0.60", "--show-roi"});
     assert(camera.options.camera_path == "/dev/video0");
     assert(camera.options.input_path.empty());
     assert(camera.options.fullscreen);
     assert(camera.options.smooth_preview);
     assert(camera.options.roi_enabled);
+    assert(camera.options.show_roi);
     assert(camera.options.roi.x == 0.25F);
     assert(camera.options.roi.height == 0.60F);
     expect_error([] { parse({"edge_vision", "--unknown"}); });
@@ -84,6 +83,8 @@ void run_cli_tests()
                              "0.1,0.1,0.5"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--conf", "1.1"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--max-frames", "-1"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
+                             "/dev/video0", "--show", "--smooth-preview", "--show-roi"}); });
 }
 
 }  // namespace
@@ -93,11 +94,9 @@ int main()
     run_cli_tests();
     run_display_composer_tests();
     run_geometry_tests();
-    run_postprocess_tests();
     run_yolo11_postprocess_tests();
     run_iou_tracker_tests();
     run_region_monitor_tests();
-    run_visualizer_tests();
     run_perf_monitor_tests();
 #if EDGEVISION_WITH_VIDEO
     run_camera_source_tests();
