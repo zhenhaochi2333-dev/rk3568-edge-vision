@@ -49,6 +49,11 @@ void run_cli_tests()
     assert(!valid.show_help);
     assert(valid.options.conf_threshold == 0.25F);
     assert(valid.options.force);
+    assert(valid.options.roi_enabled);
+    assert(valid.options.roi.x == 0.0F);
+    assert(valid.options.roi.y == 0.0F);
+    assert(valid.options.roi.width == 1.0F);
+    assert(valid.options.roi.height == 1.0F);
     const edgevision::CliParseResult camera = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
         "--camera", "/dev/video0", "--show", "--fullscreen", "--smooth-preview",
@@ -61,6 +66,12 @@ void run_cli_tests()
     assert(camera.options.show_roi);
     assert(camera.options.roi.x == 0.25F);
     assert(camera.options.roi.height == 0.60F);
+    const edgevision::CliParseResult default_roi_debug = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--camera", "/dev/video0", "--show", "--smooth-preview", "--show-roi"});
+    assert(default_roi_debug.options.roi_enabled);
+    assert(default_roi_debug.options.show_roi);
+    assert(default_roi_debug.options.roi.width == 1.0F);
     expect_error([] { parse({"edge_vision", "--unknown"}); });
     expect_error([] { parse({"edge_vision", "--model"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i",
@@ -83,8 +94,6 @@ void run_cli_tests()
                              "0.1,0.1,0.5"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--conf", "1.1"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--max-frames", "-1"}); });
-    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--camera",
-                             "/dev/video0", "--show", "--smooth-preview", "--show-roi"}); });
 }
 
 }  // namespace

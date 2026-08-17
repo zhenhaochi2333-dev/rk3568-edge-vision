@@ -70,6 +70,7 @@ NormalizedRoi parse_roi(const std::string& text)
 CliParseResult CliParser::parse(int argc, char** argv)
 {
     CliParseResult result;
+    bool roi_specified = false;
     for (int index = 1; index < argc; ++index) {
         const std::string option = argv[index] == nullptr ? std::string() : argv[index];
         if (option == "--help" || option == "-h") {
@@ -99,6 +100,7 @@ CliParseResult CliParser::parse(int argc, char** argv)
         } else if (option == "--roi") {
             result.options.roi = parse_roi(require_value(index, argc, argv, "--roi"));
             result.options.roi_enabled = true;
+            roi_specified = true;
         } else if (option == "--show-roi") {
             result.options.show_roi = true;
         } else if (option == "--force") {
@@ -148,11 +150,11 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.smooth_preview && !result.options.output_path.empty()) {
         throw std::runtime_error("--smooth-preview does not support --output");
     }
-    if (result.options.roi_enabled && !result.options.smooth_preview) {
+    if (roi_specified && !result.options.smooth_preview) {
         throw std::runtime_error("--roi requires --smooth-preview");
     }
-    if (result.options.show_roi && !result.options.roi_enabled) {
-        throw std::runtime_error("--show-roi requires --roi");
+    if (result.options.show_roi && !result.options.smooth_preview) {
+        throw std::runtime_error("--show-roi requires --smooth-preview");
     }
     return result;
 }

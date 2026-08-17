@@ -22,8 +22,15 @@ edgevision::Detection tracked(int track_id, int class_id, float center_x, float 
 
 void run_region_monitor_tests()
 {
-    const edgevision::NormalizedRoi roi{0.25F, 0.20F, 0.50F, 0.60F};
     const auto base = std::chrono::steady_clock::time_point{};
+    edgevision::RegionMonitor full_frame(edgevision::NormalizedRoi{});
+    const auto full_frame_detection = full_frame.update(
+        {tracked(20, 0, 95.0F, 95.0F)}, base, 100, 100);
+    assert(full_frame_detection.occupancy == 1U);
+    assert(full_frame_detection.new_events.size() == 1U);
+    assert(full_frame_detection.new_events.front().type == edgevision::RegionEventType::Enter);
+
+    const edgevision::NormalizedRoi roi{0.25F, 0.20F, 0.50F, 0.60F};
     edgevision::RegionMonitor monitor(roi, 100.0);
 
     const auto outside = monitor.update({tracked(1, 0, 10.0F, 10.0F)}, base, 100, 100);
