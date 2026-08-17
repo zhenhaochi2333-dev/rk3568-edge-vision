@@ -18,6 +18,10 @@ Commands are newline-delimited ASCII lines. The maximum command body is 1024
 bytes, excluding the terminating newline. Responses are newline-delimited
 NDJSON: one JSON object per line.
 
+The PC client imposes a separate 64 KiB maximum on one response line. This is
+a client-side safety limit; it does not change the server's 1024-byte command
+limit.
+
 The server keeps a bounded event queue of 64 entries. If it becomes full, the
 oldest queued event is dropped. Events are produced from the formal
 `RegionMonitor` event object; the TCP layer does not synthesize ROI events.
