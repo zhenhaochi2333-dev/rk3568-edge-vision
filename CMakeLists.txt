@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(EDGEVISION_BUILD_TESTS "Build lightweight Phase 0-5 tests" ON)
 option(EDGEVISION_WITH_VIDEO "Build VideoIO and video pipeline support" ON)
+option(EDGEVISION_BUILD_BENCHMARKS "Build standalone RKNN timing tools" OFF)
 set(RKNN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/rknn_runtime_1.6.0/include" CACHE PATH
     "Directory containing rknn_api.h")
 set(RKNN_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/deps/rknn_runtime_1.6.0/lib/aarch64/librknnrt.so" CACHE FILEPATH
@@ -67,6 +68,22 @@ set_target_properties(edge_vision PROPERTIES
     INSTALL_RPATH "\$ORIGIN/lib"
     BUILD_WITH_INSTALL_RPATH TRUE
 )
+
+if(EDGEVISION_BUILD_BENCHMARKS)
+    add_executable(edgevision_rknn_benchmark
+        tools/rknn_run_benchmark.cpp
+        src/rknn_model.cpp
+        src/logger.cpp
+    )
+    target_include_directories(edgevision_rknn_benchmark
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${RKNN_INCLUDE_DIR}"
+            "${OpenCV_INCLUDE_DIRS}"
+    )
+    target_link_libraries(edgevision_rknn_benchmark PRIVATE "${RKNN_LIBRARY}")
+    target_compile_options(edgevision_rknn_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 if(EDGEVISION_BUILD_TESTS)
     enable_testing()

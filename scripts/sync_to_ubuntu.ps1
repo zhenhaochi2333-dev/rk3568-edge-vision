@@ -13,6 +13,7 @@ $syncItems = @(
     (Join-Path $sourceRoot "CMakeLists.txt")
     (Join-Path $sourceRoot "include")
     (Join-Path $sourceRoot "src")
+    (Join-Path $sourceRoot "tools")
     (Join-Path $sourceRoot "cmake")
     (Join-Path $sourceRoot "scripts")
     (Join-Path $sourceRoot "docs")
