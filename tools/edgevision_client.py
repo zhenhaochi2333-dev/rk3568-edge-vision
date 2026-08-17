@@ -7,6 +7,9 @@ import socket
 import sys
 import time
 
+DEFAULT_HOST = "192.168.77.2"
+MAX_RESPONSE_BYTES = 64 * 1024
+
 
 def read_line(connection):
     data = bytearray()
@@ -15,6 +18,8 @@ def read_line(connection):
         if not chunk:
             raise RuntimeError("EdgeVision TCP connection closed")
         data.extend(chunk)
+        if len(data) > MAX_RESPONSE_BYTES:
+            raise RuntimeError("EdgeVision TCP response exceeded 64 KiB")
         if chunk == b"\n":
             return json.loads(data.decode("utf-8"))
 
@@ -39,7 +44,8 @@ def format_event(event):
 
 def main():
     parser = argparse.ArgumentParser(description="EdgeVision TCP status/event client")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help="RK3568 address (default: %(default)s)")
     parser.add_argument("--port", type=int, default=9000)
     parser.add_argument("command", choices=("ping", "status", "subscribe", "unsubscribe"))
     parser.add_argument("--duration", type=float, default=10.0,
@@ -71,6 +77,9 @@ def main():
                 else:
                     print(json.dumps(event, ensure_ascii=False))
         return 0
+    except KeyboardInterrupt:
+        print("\nedgevision_client: interrupted", file=sys.stderr)
+        return 130
     except (OSError, RuntimeError, json.JSONDecodeError) as error:
         print("edgevision_client: {}".format(error), file=sys.stderr)
         return 1
