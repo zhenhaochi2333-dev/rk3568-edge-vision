@@ -71,6 +71,8 @@ struct AppOptions {
     bool fullscreen = false;
     bool smooth_preview = false;
     bool force = false;
+    bool tcp_enabled = false;
+    int tcp_port = 9000;
     // The complete camera frame is the default monitoring region; --roi may override it.
     bool roi_enabled = true;
     bool show_roi = false;

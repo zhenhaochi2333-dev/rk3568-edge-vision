@@ -14,6 +14,9 @@ void run_region_monitor_tests();
 void run_perf_monitor_tests();
 void run_camera_source_tests();
 void run_video_io_tests();
+#if defined(__unix__)
+void run_tcp_server_tests();
+#endif
 
 namespace {
 
@@ -54,6 +57,11 @@ void run_cli_tests()
     assert(valid.options.roi.y == 0.0F);
     assert(valid.options.roi.width == 1.0F);
     assert(valid.options.roi.height == 1.0F);
+    const edgevision::CliParseResult tcp = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--input", "bus.jpg", "--output", "out.png", "--tcp-port", "9010"});
+    assert(tcp.options.tcp_enabled);
+    assert(tcp.options.tcp_port == 9010);
     const edgevision::CliParseResult camera = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
         "--camera", "/dev/video0", "--show", "--fullscreen", "--smooth-preview",
@@ -93,6 +101,8 @@ void run_cli_tests()
                              "/dev/video0", "--show", "--smooth-preview", "--roi",
                              "0.1,0.1,0.5"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--conf", "1.1"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--tcp-port", "0"}); });
+    expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--tcp-port", "65536"}); });
     expect_error([] { parse({"edge_vision", "--model", "m", "--labels", "l", "--input", "i", "--output", "o", "--max-frames", "-1"}); });
 }
 
@@ -110,6 +120,9 @@ int main()
 #if EDGEVISION_WITH_VIDEO
     run_camera_source_tests();
     run_video_io_tests();
+#endif
+#if defined(__unix__)
+    run_tcp_server_tests();
 #endif
     std::cout << "edgevision_tests: PASS\n";
     return 0;

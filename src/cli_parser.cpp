@@ -105,6 +105,12 @@ CliParseResult CliParser::parse(int argc, char** argv)
             result.options.show_roi = true;
         } else if (option == "--force") {
             result.options.force = true;
+        } else if (option == "--tcp") {
+            result.options.tcp_enabled = true;
+        } else if (option == "--tcp-port") {
+            result.options.tcp_port = parse_int(require_value(index, argc, argv, "--tcp-port"),
+                                                "--tcp-port");
+            result.options.tcp_enabled = true;
         } else {
             throw std::runtime_error("unknown option: " + option);
         }
@@ -138,6 +144,9 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.max_frames < 0) {
         throw std::runtime_error("--max-frames must be non-negative");
     }
+    if (result.options.tcp_port < 1 || result.options.tcp_port > 65535) {
+        throw std::runtime_error("--tcp-port must be within [1,65535]");
+    }
     if (result.options.fullscreen && !result.options.show) {
         throw std::runtime_error("--fullscreen requires --show");
     }
@@ -164,7 +173,8 @@ const char* CliParser::usage()
     return "Usage: edge_vision --model MODEL --labels LABELS "
            "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
-           "[--smooth-preview] [--roi X,Y,W,H] [--show-roi] [--force] [--help]";
+           "[--smooth-preview] [--roi X,Y,W,H] [--show-roi] [--force] "
+           "[--tcp] [--tcp-port PORT] [--help]";
 }
 
 }  // namespace edgevision

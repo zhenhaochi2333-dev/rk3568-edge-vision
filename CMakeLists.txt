@@ -39,6 +39,7 @@ set(EDGEVISION_SOURCES
     src/perf_monitor.cpp
     src/region_monitor.cpp
     src/rknn_model.cpp
+    src/tcp_server.cpp
     src/yolo11_detector.cpp
 )
 if(EDGEVISION_WITH_VIDEO)
@@ -100,6 +101,9 @@ if(EDGEVISION_BUILD_TESTS)
             tests/test_camera_source.cpp
             tests/test_video_io.cpp
         )
+    endif()
+    if(UNIX)
+        target_sources(edgevision_tests PRIVATE tests/test_tcp_server.cpp)
     endif()
     target_link_libraries(edgevision_tests PRIVATE edgevision_core)
     target_compile_definitions(edgevision_tests PRIVATE EDGEVISION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

@@ -7,6 +7,7 @@
 #include "edgevision/perf_monitor.hpp"
 #include "edgevision/region_monitor.hpp"
 #include "edgevision/rknn_model.hpp"
+#include "edgevision/tcp_server.hpp"
 #include "edgevision/yolo11_detector.hpp"
 #if EDGEVISION_WITH_VIDEO
 #include "edgevision/camera_source.hpp"
@@ -117,6 +118,18 @@ std::string format_detection(const Detection& detection, const std::vector<std::
          << static_cast<int>(detection.box.y + detection.box.height) << ") "
          << std::fixed << std::setprecision(3) << detection.confidence;
     return line.str();
+}
+
+void publish_region_events(TcpServer* tcp_server,
+                           const std::vector<RegionEvent>& events,
+                           const std::vector<std::string>& labels)
+{
+    if (tcp_server == nullptr) {
+        return;
+    }
+    for (const RegionEvent& event : events) {
+        tcp_server->publish_event(event, LabelLoader::name(labels, event.class_id));
+    }
 }
 
 #if EDGEVISION_WITH_VIDEO
@@ -729,7 +742,7 @@ void verify_video_output(const VideoWriterInfo& info)
 }
 
 int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
-                      const std::vector<std::string>& labels)
+                      const std::vector<std::string>& labels, TcpServer* tcp_server)
 {
     if (!gui_available()) {
         throw std::runtime_error("smooth-preview requires a usable X11 display");
@@ -779,6 +792,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     Clock::time_point display_profile_wall_end{};
     Clock::time_point display_wall_start{};
     Clock::time_point display_wall_end{};
+    Clock::time_point last_network_status{};
     std::string error_message;
 
     const auto cleanup = [&] {
@@ -829,6 +843,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 latest_new_events = snapshot.region.new_events;
                 latest_metrics = snapshot.metrics;
                 latest_result_finished = snapshot.finished_at;
+                publish_region_events(tcp_server, snapshot.region.new_events, labels);
             }
             const double snapshot_copy_ms =
                 std::chrono::duration<double, std::milli>(Clock::now() - snapshot_copy_start).count();
@@ -858,6 +873,16 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 result_age_sum_ms += display_metrics.display_result_age_ms;
                 result_age_max_ms = std::max(result_age_max_ms, display_metrics.display_result_age_ms);
                 ++result_age_samples;
+            }
+
+            if (tcp_server != nullptr &&
+                (last_network_status == Clock::time_point{} ||
+                 std::chrono::duration<double>(display_now - last_network_status).count() >= 0.25)) {
+                const CameraCaptureStats capture_stats = camera.stats();
+                tcp_server->update_status(TcpStatusSnapshot{
+                    latest_detections.size(), capture_stats.captured_fps,
+                    display_metrics.display_fps, display_metrics.detection_fps});
+                last_network_status = display_now;
             }
 
             const cv::Mat& composed = composer.compose(
@@ -1094,7 +1119,7 @@ int run_video(const AppOptions& options, Yolo11Detector& detector,
 }
 
 int run_camera(const AppOptions& options, Yolo11Detector& detector,
-               const std::vector<std::string>& labels)
+               const std::vector<std::string>& labels, TcpServer* tcp_server)
 {
     bool preview = options.show;
     if (preview && !gui_available()) {
@@ -1182,6 +1207,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
             region = region_monitor->update(tracked_detections, captured_at,
                                             frame.cols, frame.rows);
         }
+        publish_region_events(tcp_server, region.new_events, labels);
         FrameMetrics metrics = result.metrics;
         metrics.object_count = static_cast<double>(tracked_detections.size());
         metrics.fps = static_cast<double>(processed + 1U);
@@ -1215,6 +1241,14 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
         const double elapsed = std::chrono::duration<double>(Clock::now() - wall_start).count();
         monitor.set_throughput_fps(elapsed > 0.0 ? static_cast<double>(processed) / elapsed : 0.0);
         monitor.add_frame(metrics);
+
+        if (tcp_server != nullptr) {
+            const TcpStatusSnapshot status{
+                tracked_detections.size(), source.fps,
+                elapsed > 0.0 ? static_cast<double>(processed) / elapsed : 0.0,
+                elapsed > 0.0 ? static_cast<double>(processed) / elapsed : 0.0};
+            tcp_server->update_status(status);
+        }
 
         double display_ms = 0.0;
         if (preview) {
@@ -1325,12 +1359,19 @@ int run_application(const AppOptions& options)
     RknnModel model(options.model_path);
     Yolo11Detector detector(model, options.conf_threshold, options.nms_threshold);
 
+    std::unique_ptr<TcpServer> tcp_server;
+    if (options.tcp_enabled) {
+        tcp_server.reset(new TcpServer(static_cast<std::uint16_t>(options.tcp_port)));
+        tcp_server->start();
+        log_info("TCP server listening on port " + std::to_string(tcp_server->port()));
+    }
+
     if (!options.camera_path.empty()) {
 #if EDGEVISION_WITH_VIDEO
         if (options.smooth_preview) {
-            return run_smooth_camera(options, detector, labels);
+            return run_smooth_camera(options, detector, labels, tcp_server.get());
         }
-        return run_camera(options, detector, labels);
+        return run_camera(options, detector, labels, tcp_server.get());
 #else
         throw std::runtime_error("camera mode requires video support in the build");
 #endif

@@ -71,7 +71,8 @@ RegionSnapshot RegionMonitor::update(
             state_it = states_.emplace(detection.track_id, state).first;
             if (inside) {
                 append_event(RegionEvent{RegionEventType::Enter, detection.track_id,
-                                         detection.class_id, source_timestamp}, snapshot);
+                                         detection.class_id, source_timestamp,
+                                         detection.confidence}, snapshot);
             }
         } else {
             TrackState& state = state_it->second;
@@ -81,19 +82,22 @@ RegionSnapshot RegionMonitor::update(
                 state.dwell_emitted = false;
                 state.entered_at = source_timestamp;
                 append_event(RegionEvent{RegionEventType::Enter, detection.track_id,
-                                         detection.class_id, source_timestamp}, snapshot);
+                                         detection.class_id, source_timestamp,
+                                         detection.confidence}, snapshot);
             } else if (state.inside && !inside) {
                 state.inside = false;
                 state.dwell_emitted = false;
                 state.entered_at = std::chrono::steady_clock::time_point{};
                 append_event(RegionEvent{RegionEventType::Exit, detection.track_id,
-                                         detection.class_id, source_timestamp}, snapshot);
+                                         detection.class_id, source_timestamp,
+                                         detection.confidence}, snapshot);
             } else if (state.inside && !state.dwell_emitted &&
                        std::chrono::duration<double>(source_timestamp - state.entered_at).count() >=
                            dwell_seconds_) {
                 state.dwell_emitted = true;
                 append_event(RegionEvent{RegionEventType::Dwell, detection.track_id,
-                                         detection.class_id, source_timestamp}, snapshot);
+                                         detection.class_id, source_timestamp,
+                                         detection.confidence}, snapshot);
             }
         }
     }

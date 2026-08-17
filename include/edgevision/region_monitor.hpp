@@ -21,6 +21,7 @@ struct RegionEvent {
     int track_id = -1;
     int class_id = -1;
     std::chrono::steady_clock::time_point source_timestamp{};
+    float confidence = 0.0F;
 };
 
 struct RegionSnapshot {
