@@ -68,6 +68,8 @@ def main():
 
             deadline = time.monotonic() + max(0.0, args.duration)
             while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                connection.settimeout(min(1.0, remaining))
                 try:
                     event = read_line(connection)
                 except socket.timeout:
@@ -80,7 +82,10 @@ def main():
     except KeyboardInterrupt:
         print("\nedgevision_client: interrupted", file=sys.stderr)
         return 130
-    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+    except json.JSONDecodeError as error:
+        print("edgevision_client: malformed JSON response: {}".format(error), file=sys.stderr)
+        return 1
+    except (OSError, RuntimeError) as error:
         print("edgevision_client: {}".format(error), file=sys.stderr)
         return 1
 
