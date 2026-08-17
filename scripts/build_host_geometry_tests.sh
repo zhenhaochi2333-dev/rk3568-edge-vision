@@ -11,7 +11,6 @@ g++ -std=c++17 -Wall -Wextra -Wpedantic -I"${SOURCE_ROOT}/include" \
     "${SOURCE_ROOT}/src/image_processor.cpp" \
     "${SOURCE_ROOT}/src/iou_tracker.cpp" \
     "${SOURCE_ROOT}/src/region_monitor.cpp" \
-    "${SOURCE_ROOT}/src/visualizer.cpp" \
     "${SOURCE_ROOT}/tests/test_display_composer.cpp" \
     "${SOURCE_ROOT}/tests/test_geometry.cpp" \
     "${SOURCE_ROOT}/tests/test_host_geometry_main.cpp" \
