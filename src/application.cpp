@@ -13,6 +13,9 @@
 #include "edgevision/camera_source.hpp"
 #include "edgevision/network_camera_source.hpp"
 #include "edgevision/video_io.hpp"
+#if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
+#include "edgevision/rtsp_streamer.hpp"
+#endif
 #endif
 
 #include <opencv2/imgcodecs.hpp>
@@ -833,10 +836,18 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     if (!gui_available()) {
         throw std::runtime_error("smooth-preview requires a usable X11 display");
     }
+#if !defined(EDGEVISION_WITH_RTSP) || !EDGEVISION_WITH_RTSP
+    if (options.input_mode == InputMode::NetworkCamera) {
+        throw std::runtime_error("network input requires an RTSP-enabled build");
+    }
+#endif
 
     SignalGuard signal_guard;
+    const bool network_input = options.input_mode == InputMode::NetworkCamera;
+    const int output_width = network_input ? 1280 : DisplayComposer::kDefaultDisplayWidth;
+    const int output_height = network_input ? 720 : DisplayComposer::kDefaultDisplayHeight;
     std::shared_ptr<CaptureInput> capture_input;
-    if (options.input_mode == InputMode::NetworkCamera) {
+    if (network_input) {
         capture_input = std::make_shared<NetworkCaptureInput>(5600);
     } else {
         capture_input = std::make_shared<LocalCaptureInput>(options.camera_path);
@@ -849,10 +860,19 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
              std::to_string(source.height) + " fps=" + std::to_string(source.fps));
     log_info("smooth camera pipeline=" + camera.pipeline());
 
+#if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
+    std::unique_ptr<RtspStreamer> rtsp_streamer;
+    if (network_input) {
+        rtsp_streamer.reset(new RtspStreamer(8554));
+        rtsp_streamer->start();
+        log_info("RTSP detection stream=" + rtsp_streamer->url());
+        log_info("RTSP pipeline=" + rtsp_streamer->pipeline());
+    }
+#endif
+
     bool window_ready = false;
     try {
-        configure_display_window(DisplayComposer::kDefaultDisplayWidth,
-                                 DisplayComposer::kDefaultDisplayHeight,
+        configure_display_window(output_width, output_height,
                                  options.fullscreen);
         window_ready = true;
     } catch (const cv::Exception& error) {
@@ -862,7 +882,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     }
 
     SmoothAiWorker worker(detector, options.roi_enabled ? &options.roi : nullptr);
-    DisplayComposer composer(labels);
+    DisplayComposer composer(labels, output_width, output_height);
     const NormalizedRoi* active_roi = options.roi_enabled ? &options.roi : nullptr;
     std::shared_ptr<const CameraFrameSnapshot> frame_snapshot;
     std::vector<Detection> latest_detections;
@@ -888,6 +908,11 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     std::string error_message;
 
     const auto cleanup = [&] {
+#if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
+        if (rtsp_streamer != nullptr) {
+            rtsp_streamer->stop();
+        }
+#endif
         worker.request_stop();
         worker.join();
         camera.request_stop();
@@ -980,6 +1005,11 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             const cv::Mat& composed = composer.compose(
                 frame, latest_detections, latest_new_events, active_roi, options.show_roi);
             latest_new_events.clear();
+#if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
+            if (rtsp_streamer != nullptr) {
+                rtsp_streamer->publish(composed);
+            }
+#endif
             const DisplayComposeTimings& compose_timings = composer.last_timings();
             display_metrics.visualization_ms = compose_timings.crop_resize_ms +
                                                compose_timings.overlay_ms + compose_timings.toast_ms;

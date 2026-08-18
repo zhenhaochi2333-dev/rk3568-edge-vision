@@ -15,6 +15,9 @@ void run_perf_monitor_tests();
 void run_camera_source_tests();
 void run_network_camera_source_tests();
 void run_video_io_tests();
+#if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
+void run_rtsp_streamer_tests();
+#endif
 #if defined(__unix__)
 void run_tcp_server_tests();
 #endif
@@ -133,6 +136,9 @@ int main()
     run_camera_source_tests();
     run_network_camera_source_tests();
     run_video_io_tests();
+#endif
+#if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
+    run_rtsp_streamer_tests();
 #endif
 #if defined(__unix__)
     run_tcp_server_tests();
