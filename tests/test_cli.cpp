@@ -13,6 +13,7 @@ void run_iou_tracker_tests();
 void run_region_monitor_tests();
 void run_perf_monitor_tests();
 void run_camera_source_tests();
+void run_network_camera_source_tests();
 void run_video_io_tests();
 #if defined(__unix__)
 void run_tcp_server_tests();
@@ -74,6 +75,17 @@ void run_cli_tests()
     assert(camera.options.show_roi);
     assert(camera.options.roi.x == 0.25F);
     assert(camera.options.roi.height == 0.60F);
+    const edgevision::CliParseResult network = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--input", "network", "--show"});
+    assert(network.options.input_mode == edgevision::InputMode::NetworkCamera);
+    assert(network.options.input_path.empty());
+    assert(network.options.camera_path.empty());
+    const edgevision::CliParseResult local_alias = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--input", "local", "--show"});
+    assert(local_alias.options.input_mode == edgevision::InputMode::LocalCamera);
+    assert(local_alias.options.camera_path == "/dev/video0");
     const edgevision::CliParseResult default_roi_debug = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
         "--camera", "/dev/video0", "--show", "--smooth-preview", "--show-roi"});
@@ -119,6 +131,7 @@ int main()
     run_perf_monitor_tests();
 #if EDGEVISION_WITH_VIDEO
     run_camera_source_tests();
+    run_network_camera_source_tests();
     run_video_io_tests();
 #endif
 #if defined(__unix__)

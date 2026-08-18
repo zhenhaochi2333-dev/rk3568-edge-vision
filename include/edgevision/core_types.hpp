@@ -39,6 +39,12 @@ struct NormalizedRoi {
     float height = 1.0F;
 };
 
+enum class InputMode {
+    File,
+    LocalCamera,
+    NetworkCamera,
+};
+
 struct FrameMetrics {
     double preprocess_ms = 0.0;
     double inference_ms = 0.0;
@@ -59,6 +65,7 @@ struct DetectionResult {
 };
 
 struct AppOptions {
+    InputMode input_mode = InputMode::File;
     std::string model_path;
     std::string labels_path;
     std::string input_path;

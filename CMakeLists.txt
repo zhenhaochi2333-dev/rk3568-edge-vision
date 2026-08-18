@@ -36,6 +36,7 @@ set(EDGEVISION_SOURCES
     src/iou_tracker.cpp
     src/label_loader.cpp
     src/logger.cpp
+    src/network_camera_source.cpp
     src/perf_monitor.cpp
     src/region_monitor.cpp
     src/rknn_model.cpp
@@ -99,6 +100,7 @@ if(EDGEVISION_BUILD_TESTS)
     if(EDGEVISION_WITH_VIDEO)
         target_sources(edgevision_tests PRIVATE
             tests/test_camera_source.cpp
+            tests/test_network_camera_source.cpp
             tests/test_video_io.cpp
         )
     endif()

@@ -11,6 +11,7 @@
 #include "edgevision/yolo11_detector.hpp"
 #if EDGEVISION_WITH_VIDEO
 #include "edgevision/camera_source.hpp"
+#include "edgevision/network_camera_source.hpp"
 #include "edgevision/video_io.hpp"
 #endif
 
@@ -70,7 +71,7 @@ void validate_options(const AppOptions& options)
     if (!is_regular_file(options.labels_path)) {
         throw std::runtime_error("missing labels file: " + options.labels_path);
     }
-    const bool camera_mode = !options.camera_path.empty();
+    const bool camera_mode = options.input_mode != InputMode::File;
     if (!camera_mode && !is_regular_file(options.input_path)) {
         throw std::runtime_error("missing input file: " + options.input_path);
     }
@@ -80,14 +81,20 @@ void validate_options(const AppOptions& options)
     if (options.fullscreen && !options.show) {
         throw std::runtime_error("--fullscreen requires --show");
     }
-    if (options.smooth_preview && options.camera_path.empty()) {
-        throw std::runtime_error("--smooth-preview requires --camera");
+    if (options.smooth_preview && !camera_mode) {
+        throw std::runtime_error("--smooth-preview requires camera input");
     }
     if (options.smooth_preview && !options.show) {
         throw std::runtime_error("--smooth-preview requires --show");
     }
     if (options.smooth_preview && !options.output_path.empty()) {
         throw std::runtime_error("--smooth-preview does not support --output");
+    }
+    if (options.input_mode == InputMode::NetworkCamera && !options.show) {
+        throw std::runtime_error("network input requires --show");
+    }
+    if (options.input_mode == InputMode::NetworkCamera && !options.output_path.empty()) {
+        throw std::runtime_error("network input does not support --output");
     }
     if (!options.output_path.empty() && !camera_mode &&
         real_path_if_possible(options.input_path) == real_path_if_possible(options.output_path)) {
@@ -247,11 +254,63 @@ struct CameraCaptureStats {
     double captured_fps = 0.0;
 };
 
+class CaptureInput {
+public:
+    virtual ~CaptureInput() = default;
+
+    virtual void open() = 0;
+    virtual bool read(cv::Mat& frame) = 0;
+    virtual void release() = 0;
+    virtual CameraSourceInfo info() const = 0;
+    virtual const std::string& name() const = 0;
+    virtual const std::string& pipeline() const = 0;
+};
+
+class LocalCaptureInput final : public CaptureInput {
+public:
+    explicit LocalCaptureInput(const std::string& device)
+        : source_(device)
+    {
+    }
+
+    void open() override { source_.open(); }
+    bool read(cv::Mat& frame) override { return source_.read(frame); }
+    void release() override { source_.release(); }
+    CameraSourceInfo info() const override { return source_.info(); }
+    const std::string& name() const override { return source_.device(); }
+    const std::string& pipeline() const override { return source_.pipeline(); }
+
+private:
+    CameraSource source_;
+};
+
+class NetworkCaptureInput final : public CaptureInput {
+public:
+    explicit NetworkCaptureInput(int port)
+        : source_(port), name_("udp://0.0.0.0:" + std::to_string(port))
+    {
+    }
+
+    void open() override { source_.open(); }
+    bool read(cv::Mat& frame) override { return source_.read(frame); }
+    void release() override { source_.release(); }
+    CameraSourceInfo info() const override { return source_.info(); }
+    const std::string& name() const override { return name_; }
+    const std::string& pipeline() const override { return source_.pipeline(); }
+
+private:
+    NetworkCameraSource source_;
+    const std::string name_;
+};
+
 class CameraCaptureThread {
 public:
-    explicit CameraCaptureThread(const std::string& device)
-        : device_(device)
+    explicit CameraCaptureThread(std::shared_ptr<CaptureInput> source)
+        : source_(std::move(source))
     {
+        if (source_ == nullptr) {
+            throw std::runtime_error("camera capture input must not be null");
+        }
     }
 
     ~CameraCaptureThread()
@@ -312,7 +371,7 @@ public:
         return info_;
     }
 
-    const std::string& device() const { return device_; }
+    const std::string& device() const { return source_->name(); }
 
     std::string pipeline() const
     {
@@ -344,9 +403,15 @@ public:
 
     void request_stop()
     {
+        std::shared_ptr<CaptureInput> source;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stop_requested_ = true;
+            source = source_;
+        }
+        if (source != nullptr) {
+            // NetworkCameraSource::release() also interrupts a blocked appsink read.
+            source->release();
         }
         condition_.notify_all();
     }
@@ -371,13 +436,13 @@ private:
 
     void run()
     {
+        const std::shared_ptr<CaptureInput> source = source_;
         try {
-            CameraSource camera(device_);
-            camera.open();
+            source->open();
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                info_ = camera.info();
-                pipeline_ = camera.pipeline();
+                info_ = source->info();
+                pipeline_ = source->pipeline();
                 ready_ = true;
                 capture_start_ = Clock::now();
                 condition_.notify_all();
@@ -395,16 +460,35 @@ private:
                 }
 
                 const Clock::time_point camera_read_start = Clock::now();
-                if (!camera.read(capture_frame)) {
+                if (!source->read(capture_frame)) {
                     camera_read_ms_total_ +=
                         std::chrono::duration<double, std::milli>(Clock::now() - camera_read_start)
                             .count();
                     ++consecutive_read_failures;
                     if (consecutive_read_failures >= 5U) {
-                        camera.release();
-                        fail("camera read failed for 5 consecutive frames after " +
-                             std::to_string(captured_frames_) + " captured frames");
-                        return;
+                        source->release();
+                        constexpr auto kReopenDelay = std::chrono::milliseconds(500);
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        const bool stop_requested = condition_.wait_for(
+                            lock, kReopenDelay, [this] {
+                                return stop_requested_ || g_stop_requested != 0;
+                            });
+                        lock.unlock();
+                        if (stop_requested) {
+                            break;
+                        }
+                        try {
+                            source->open();
+                            {
+                                std::lock_guard<std::mutex> info_lock(mutex_);
+                                info_ = source->info();
+                                pipeline_ = source->pipeline();
+                            }
+                            consecutive_read_failures = 0U;
+                            log_info("camera input reopened after read failure");
+                        } catch (const std::exception& error) {
+                            log_warn(std::string("camera input reopen failed: ") + error.what());
+                        }
                     }
                     continue;
                 }
@@ -414,7 +498,7 @@ private:
                 consecutive_read_failures = 0U;
                 if (capture_frame.cols != 1280 || capture_frame.rows != 720 ||
                     capture_frame.type() != CV_8UC3) {
-                    camera.release();
+                    source->release();
                     fail("camera frame must be 1280x720 BGR CV_8UC3; got " +
                          std::to_string(capture_frame.cols) + "x" +
                          std::to_string(capture_frame.rows) + " type=" +
@@ -424,7 +508,7 @@ private:
 
                 std::shared_ptr<CameraFrameSnapshot> next(new CameraFrameSnapshot());
                 // Move the completed capture buffer into immutable shared ownership. The
-                // next CameraSource::read receives the now-empty local Mat, so it cannot
+                // next source read receives the now-empty local Mat, so it cannot
                 // overwrite a frame still used by UI or AI.
                 next->frame = std::move(capture_frame);
                 next->sequence = ++sequence;
@@ -444,7 +528,7 @@ private:
                 }
             }
 
-            camera.release();
+            source->release();
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 finished_ = true;
@@ -452,13 +536,15 @@ private:
                 condition_.notify_all();
             }
         } catch (const std::exception& error) {
+            source->release();
             fail(std::string("camera capture thread failed: ") + error.what());
         } catch (...) {
+            source->release();
             fail("camera capture thread failed with an unknown exception");
         }
     }
 
-    const std::string device_;
+    const std::shared_ptr<CaptureInput> source_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::thread worker_;
@@ -749,7 +835,13 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     }
 
     SignalGuard signal_guard;
-    CameraCaptureThread camera(options.camera_path);
+    std::shared_ptr<CaptureInput> capture_input;
+    if (options.input_mode == InputMode::NetworkCamera) {
+        capture_input = std::make_shared<NetworkCaptureInput>(5600);
+    } else {
+        capture_input = std::make_shared<LocalCaptureInput>(options.camera_path);
+    }
+    CameraCaptureThread camera(std::move(capture_input));
     camera.start();
     const CameraSourceInfo source = camera.info();
     log_info("smooth camera device=" + camera.device() + " backend=" + source.backend +
@@ -1366,9 +1458,9 @@ int run_application(const AppOptions& options)
         log_info("TCP server listening on port " + std::to_string(tcp_server->port()));
     }
 
-    if (!options.camera_path.empty()) {
+    if (options.input_mode != InputMode::File) {
 #if EDGEVISION_WITH_VIDEO
-        if (options.smooth_preview) {
+        if (options.input_mode == InputMode::NetworkCamera || options.smooth_preview) {
             return run_smooth_camera(options, detector, labels, tcp_server.get());
         }
         return run_camera(options, detector, labels, tcp_server.get());

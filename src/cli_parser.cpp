@@ -71,6 +71,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
 {
     CliParseResult result;
     bool roi_specified = false;
+    bool input_option_seen = false;
+    bool camera_option_seen = false;
     for (int index = 1; index < argc; ++index) {
         const std::string option = argv[index] == nullptr ? std::string() : argv[index];
         if (option == "--help" || option == "-h") {
@@ -80,8 +82,22 @@ CliParseResult CliParser::parse(int argc, char** argv)
         } else if (option == "--labels") {
             result.options.labels_path = require_value(index, argc, argv, "--labels");
         } else if (option == "--input") {
-            result.options.input_path = require_value(index, argc, argv, "--input");
+            input_option_seen = true;
+            const std::string input = require_value(index, argc, argv, "--input");
+            if (input == "network") {
+                result.options.input_mode = InputMode::NetworkCamera;
+                result.options.input_path.clear();
+            } else if (input == "local") {
+                result.options.input_mode = InputMode::LocalCamera;
+                result.options.input_path.clear();
+                result.options.camera_path = "/dev/video0";
+            } else {
+                result.options.input_mode = InputMode::File;
+                result.options.input_path = input;
+            }
         } else if (option == "--camera") {
+            camera_option_seen = true;
+            result.options.input_mode = InputMode::LocalCamera;
             result.options.camera_path = require_value(index, argc, argv, "--camera");
         } else if (option == "--output") {
             result.options.output_path = require_value(index, argc, argv, "--output");
@@ -122,13 +138,14 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.model_path.empty() || result.options.labels_path.empty()) {
         throw std::runtime_error("--model and --labels are required");
     }
-    if (!result.options.input_path.empty() && !result.options.camera_path.empty()) {
+    if (input_option_seen && camera_option_seen) {
         throw std::runtime_error("--input and --camera are mutually exclusive");
     }
-    if (result.options.input_path.empty() && result.options.camera_path.empty()) {
+    const bool camera_mode = result.options.input_mode != InputMode::File;
+    if (!camera_mode && result.options.input_path.empty()) {
         throw std::runtime_error("provide exactly one of --input or --camera");
     }
-    if (!result.options.camera_path.empty() && result.options.output_path.empty() &&
+    if (camera_mode && result.options.output_path.empty() &&
         !result.options.show) {
         throw std::runtime_error("camera mode requires --show or --output");
     }
@@ -150,8 +167,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
     if (result.options.fullscreen && !result.options.show) {
         throw std::runtime_error("--fullscreen requires --show");
     }
-    if (result.options.smooth_preview && result.options.camera_path.empty()) {
-        throw std::runtime_error("--smooth-preview requires --camera");
+    if (result.options.smooth_preview && !camera_mode) {
+        throw std::runtime_error("--smooth-preview requires camera input");
     }
     if (result.options.smooth_preview && !result.options.show) {
         throw std::runtime_error("--smooth-preview requires --show");
@@ -171,7 +188,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
 const char* CliParser::usage()
 {
     return "Usage: edge_vision --model MODEL --labels LABELS "
-           "(--input INPUT --output OUTPUT | --camera DEVICE [--output OUTPUT]) "
+           "(--input FILE --output OUTPUT | --input local|network [--show] | "
+           "--camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
            "[--smooth-preview] [--roi X,Y,W,H] [--show-roi] [--force] "
            "[--tcp] [--tcp-port PORT] [--help]";
