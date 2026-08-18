@@ -288,10 +288,13 @@ void TcpServer::flush_events()
                                        queued.event.source_timestamp.time_since_epoch())
                                        .count();
         std::ostringstream message;
+        const int logical_id = queued.event.logical_id >= 0 ? queued.event.logical_id
+                                                              : queued.event.track_id;
         message << "{\"type\":\"event\",\"event\":\""
                 << event_name(queued.event.type) << "\",\"class\":\""
-                << json_escape(queued.class_name) << "\",\"track_id\":"
-                << queued.event.track_id << ",\"confidence\":" << std::fixed
+                << json_escape(queued.class_name) << "\",\"logical_id\":"
+                << logical_id << ",\"track_id\":" << logical_id
+                << ",\"confidence\":" << std::fixed
                 << std::setprecision(3) << queued.event.confidence << ",\"timestamp_ms\":"
                 << timestamp_ms << "}\n";
         if (!send_line(message.str())) {

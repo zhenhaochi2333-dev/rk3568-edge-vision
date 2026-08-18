@@ -53,6 +53,11 @@ RegionSnapshot RegionMonitor::update(
         if (detection.track_id < 0) {
             continue;
         }
+        if (detection.logical_id >= 0 &&
+            detection.lifecycle_state == LogicalObjectState::Cold) {
+            continue;
+        }
+        const int logical_id = detection.logical_id >= 0 ? detection.logical_id : detection.track_id;
         const float center_x = (detection.box.x + detection.box.width * 0.5F) /
                                static_cast<float>(frame_width);
         const float center_y = (detection.box.y + detection.box.height * 0.5F) /
@@ -62,17 +67,18 @@ RegionSnapshot RegionMonitor::update(
             ++snapshot.occupancy;
         }
 
-        auto state_it = states_.find(detection.track_id);
+        auto state_it = states_.find(logical_id);
         if (state_it == states_.end()) {
             TrackState state;
             state.class_id = detection.class_id;
             state.inside = inside;
             state.entered_at = inside ? source_timestamp : std::chrono::steady_clock::time_point{};
-            state_it = states_.emplace(detection.track_id, state).first;
+            state_it = states_.emplace(logical_id, state).first;
             if (inside) {
-                append_event(RegionEvent{RegionEventType::Enter, detection.track_id,
-                                         detection.class_id, source_timestamp,
-                                         detection.confidence}, snapshot);
+                RegionEvent event{RegionEventType::Enter, logical_id, detection.class_id,
+                                  source_timestamp, detection.confidence};
+                event.logical_id = logical_id;
+                append_event(event, snapshot);
             }
         } else {
             TrackState& state = state_it->second;
@@ -81,23 +87,26 @@ RegionSnapshot RegionMonitor::update(
                 state.inside = true;
                 state.dwell_emitted = false;
                 state.entered_at = source_timestamp;
-                append_event(RegionEvent{RegionEventType::Enter, detection.track_id,
-                                         detection.class_id, source_timestamp,
-                                         detection.confidence}, snapshot);
+                RegionEvent event{RegionEventType::Enter, logical_id, detection.class_id,
+                                  source_timestamp, detection.confidence};
+                event.logical_id = logical_id;
+                append_event(event, snapshot);
             } else if (state.inside && !inside) {
                 state.inside = false;
                 state.dwell_emitted = false;
                 state.entered_at = std::chrono::steady_clock::time_point{};
-                append_event(RegionEvent{RegionEventType::Exit, detection.track_id,
-                                         detection.class_id, source_timestamp,
-                                         detection.confidence}, snapshot);
+                RegionEvent event{RegionEventType::Exit, logical_id, detection.class_id,
+                                  source_timestamp, detection.confidence};
+                event.logical_id = logical_id;
+                append_event(event, snapshot);
             } else if (state.inside && !state.dwell_emitted &&
                        std::chrono::duration<double>(source_timestamp - state.entered_at).count() >=
                            dwell_seconds_) {
                 state.dwell_emitted = true;
-                append_event(RegionEvent{RegionEventType::Dwell, detection.track_id,
-                                         detection.class_id, source_timestamp,
-                                         detection.confidence}, snapshot);
+                RegionEvent event{RegionEventType::Dwell, logical_id, detection.class_id,
+                                  source_timestamp, detection.confidence};
+                event.logical_id = logical_id;
+                append_event(event, snapshot);
             }
         }
     }

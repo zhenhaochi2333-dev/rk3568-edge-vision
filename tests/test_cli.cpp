@@ -11,6 +11,7 @@ void run_display_composer_tests();
 void run_yolo11_postprocess_tests();
 void run_iou_tracker_tests();
 void run_region_monitor_tests();
+void run_semantic_stabilizer_tests();
 void run_perf_monitor_tests();
 void run_camera_source_tests();
 void run_network_camera_source_tests();
@@ -131,6 +132,7 @@ int main()
     run_yolo11_postprocess_tests();
     run_iou_tracker_tests();
     run_region_monitor_tests();
+    run_semantic_stabilizer_tests();
     run_perf_monitor_tests();
 #if EDGEVISION_WITH_VIDEO
     run_camera_source_tests();

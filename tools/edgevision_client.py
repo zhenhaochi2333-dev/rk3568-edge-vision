@@ -31,12 +31,12 @@ def send_command(connection, command):
 
 def format_event(event):
     return (
-        "[{timestamp}] {event} {class_name} #{track_id} confidence={confidence:.3f}"
+        "[{timestamp}] {event} {class_name} #{logical_id} confidence={confidence:.3f}"
         .format(
             timestamp=time.strftime("%H:%M:%S"),
             event=event.get("event", "EVENT"),
             class_name=event.get("class", "unknown"),
-            track_id=event.get("track_id", -1),
+            logical_id=event.get("logical_id", event.get("track_id", -1)),
             confidence=event.get("confidence", 0.0),
         )
     )

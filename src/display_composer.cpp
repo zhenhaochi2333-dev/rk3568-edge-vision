@@ -227,8 +227,9 @@ void DisplayComposer::draw_detection(const Detection& detection,
     cv::rectangle(canvas_, box, color, 2, cv::LINE_AA);
     std::ostringstream label;
     label << label_for(detection.class_id);
-    if (detection.track_id >= 0) {
-        label << " #" << detection.track_id;
+    const int display_id = detection.logical_id >= 0 ? detection.logical_id : detection.track_id;
+    if (display_id >= 0) {
+        label << " #" << display_id;
     }
     label << ' ' << std::fixed << std::setprecision(0) << detection.confidence * 100.0F << '%';
     draw_label(label.str(), box, color, occupied_label_rects);
@@ -288,8 +289,10 @@ void DisplayComposer::update_and_draw_toasts(const std::vector<RegionEvent>& new
     for (auto it = toasts_.rbegin(); it != toasts_.rend(); ++it) {
         std::ostringstream text;
         text << event_type_name(it->event.type) << " | " << label_for(it->event.class_id);
-        if (it->event.track_id >= 0) {
-            text << " #" << it->event.track_id;
+        const int display_id = it->event.logical_id >= 0 ? it->event.logical_id
+                                                          : it->event.track_id;
+        if (display_id >= 0) {
+            text << " #" << display_id;
         }
         int baseline = 0;
         const cv::Size text_size = cv::getTextSize(text.str(), cv::FONT_HERSHEY_SIMPLEX, 0.58, 1,

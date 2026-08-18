@@ -18,10 +18,13 @@ enum class RegionEventType {
 
 struct RegionEvent {
     RegionEventType type = RegionEventType::Enter;
+    // Kept for wire/API compatibility; it carries the stable logical id when
+    // an event came through SemanticStabilizer.
     int track_id = -1;
     int class_id = -1;
     std::chrono::steady_clock::time_point source_timestamp{};
     float confidence = 0.0F;
+    int logical_id = -1;
 };
 
 struct RegionSnapshot {

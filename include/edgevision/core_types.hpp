@@ -9,11 +9,21 @@
 
 namespace edgevision {
 
+enum class LogicalObjectState {
+    Cold,
+    Confirmed,
+    Missing,
+    Removed,
+};
+
 struct Detection {
     int class_id = -1;
     float confidence = 0.0F;
     cv::Rect2f box;
     int track_id = -1;
+    int logical_id = -1;
+    float presence_score = 0.0F;
+    LogicalObjectState lifecycle_state = LogicalObjectState::Cold;
 };
 
 struct LetterboxInfo {

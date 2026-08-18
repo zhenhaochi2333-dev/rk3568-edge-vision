@@ -7,6 +7,7 @@
 #include "edgevision/perf_monitor.hpp"
 #include "edgevision/region_monitor.hpp"
 #include "edgevision/rknn_model.hpp"
+#include "edgevision/semantic_stabilizer.hpp"
 #include "edgevision/tcp_server.hpp"
 #include "edgevision/yolo11_detector.hpp"
 #if EDGEVISION_WITH_VIDEO
@@ -765,22 +766,24 @@ private:
                 const Clock::time_point ai_start = Clock::now();
                 const DetectionResult result = detector_.detect_with_metrics(frame);
                 const Clock::time_point finished_at = Clock::now();
-                std::vector<Detection> tracked_detections = tracker_.update(result.detections);
+                const std::vector<Detection> tracked_detections = tracker_.update(result.detections);
+                std::vector<Detection> stabilized_detections =
+                    stabilizer_.update(tracked_detections, frame_snapshot->captured_at);
                 RegionSnapshot region;
                 if (region_monitor_ != nullptr) {
-                    region = region_monitor_->update(tracked_detections,
+                    region = region_monitor_->update(stabilized_detections,
                                                      frame_snapshot->captured_at,
                                                      frame.cols, frame.rows);
                 }
                 FrameMetrics metrics = result.metrics;
-                metrics.object_count = static_cast<double>(tracked_detections.size());
+                metrics.object_count = static_cast<double>(stabilized_detections.size());
                 metrics.ai_latency_ms =
                     std::chrono::duration<double, std::milli>(finished_at - ai_start).count();
 
                 std::lock_guard<std::mutex> lock(mutex_);
                 latest_.generation += 1U;
                 latest_.source_frame_id = frame_snapshot->sequence;
-                latest_.detections = std::move(tracked_detections);
+                latest_.detections = std::move(stabilized_detections);
                 latest_.metrics = metrics;
                 latest_.region = std::move(region);
                 latest_.captured_at = frame_snapshot->captured_at;
@@ -808,6 +811,7 @@ private:
 
     Yolo11Detector& detector_;
     IouTracker tracker_;
+    SemanticStabilizer stabilizer_;
     std::unique_ptr<RegionMonitor> region_monitor_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
@@ -1296,6 +1300,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
     Clock::time_point profile_wall_end{};
     DisplayComposer composer(labels);
     IouTracker tracker;
+    SemanticStabilizer stabilizer;
     std::unique_ptr<RegionMonitor> region_monitor;
     if (options.roi_enabled) {
         region_monitor.reset(new RegionMonitor(options.roi));
@@ -1330,17 +1335,19 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
         const auto captured_at = Clock::now();
         const DetectionResult result = detector.detect_with_metrics(frame);
         const std::vector<Detection> tracked_detections = tracker.update(result.detections);
+        const std::vector<Detection> stabilized_detections =
+            stabilizer.update(tracked_detections, captured_at);
         RegionSnapshot region;
         if (region_monitor != nullptr) {
-            region = region_monitor->update(tracked_detections, captured_at,
+            region = region_monitor->update(stabilized_detections, captured_at,
                                             frame.cols, frame.rows);
         }
         publish_region_events(tcp_server, region.new_events, labels);
         FrameMetrics metrics = result.metrics;
-        metrics.object_count = static_cast<double>(tracked_detections.size());
+        metrics.object_count = static_cast<double>(stabilized_detections.size());
         metrics.fps = static_cast<double>(processed + 1U);
         const cv::Mat& output_frame = composer.compose(
-            frame, tracked_detections, region.new_events,
+            frame, stabilized_detections, region.new_events,
             options.roi_enabled ? &options.roi : nullptr, options.show_roi);
         const DisplayComposeTimings& compose_timings = composer.last_timings();
         const auto visualization_end = Clock::now();

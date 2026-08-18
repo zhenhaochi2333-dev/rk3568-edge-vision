@@ -73,11 +73,14 @@ events are sent as NDJSON lines while the client remains connected.
 Example event:
 
 ```json
-{"type":"event","event":"ENTER","class":"person","track_id":7,"confidence":0.910,"timestamp_ms":123456789}
+{"type":"event","event":"ENTER","class":"person","logical_id":7,"track_id":7,"confidence":0.910,"timestamp_ms":123456789}
 ```
 
-Supported event names are `ENTER`, `DWELL`, and `EXIT`. `timestamp_ms` is the
-source monotonic timestamp in milliseconds, not wall-clock UTC.
+Supported event names are `ENTER`, `DWELL`, and `EXIT`. `logical_id` is the
+stable business identity produced after tracker reassociation and temporal
+fusion. `track_id` remains as a compatibility alias and has the same value for
+events produced by the current pipeline. `timestamp_ms` is the source
+monotonic timestamp in milliseconds, not wall-clock UTC.
 
 ### `UNSUBSCRIBE_EVENTS`
 

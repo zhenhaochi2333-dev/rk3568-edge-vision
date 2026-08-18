@@ -41,6 +41,7 @@ set(EDGEVISION_SOURCES
     src/perf_monitor.cpp
     src/region_monitor.cpp
     src/rknn_model.cpp
+    src/semantic_stabilizer.cpp
     src/tcp_server.cpp
     src/yolo11_detector.cpp
 )
@@ -114,6 +115,7 @@ if(EDGEVISION_BUILD_TESTS)
         tests/test_iou_tracker.cpp
         tests/test_yolo11_postprocess.cpp
         tests/test_region_monitor.cpp
+        tests/test_semantic_stabilizer.cpp
         tests/test_perf_monitor.cpp
     )
     if(EDGEVISION_WITH_VIDEO)
