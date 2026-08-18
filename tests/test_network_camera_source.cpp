@@ -6,9 +6,11 @@ void run_network_camera_source_tests()
 {
     const edgevision::NetworkCameraSource source(5600);
     assert(source.port() == 5600);
-    assert(source.pipeline().find("udpsrc port=5600") != std::string::npos);
-    assert(source.pipeline().find("rtph264depay ! h264parse") != std::string::npos);
-    assert(source.pipeline().find("mppvideodec format=BGR") != std::string::npos);
-    assert(source.pipeline().find("appsink sync=false max-buffers=1 drop=true") !=
-           std::string::npos);
+    assert(source.pipeline().find("tcp-server-mjpeg port=5600") != std::string::npos);
+    assert(source.pipeline().find("OpenCV imdecode(BGR)") != std::string::npos);
+    assert(source.pipeline().find("SOI/EOI framing") != std::string::npos);
+    assert(source.pipeline().find("tcpserversrc") == std::string::npos);
+    assert(source.pipeline().find("mppvideodec") == std::string::npos);
+    assert(source.pipeline().find("rtph264depay") == std::string::npos);
+    assert(source.pipeline().find("appsink") == std::string::npos);
 }

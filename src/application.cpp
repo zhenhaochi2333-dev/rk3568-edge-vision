@@ -290,7 +290,7 @@ private:
 class NetworkCaptureInput final : public CaptureInput {
 public:
     explicit NetworkCaptureInput(int port)
-        : source_(port), name_("udp://0.0.0.0:" + std::to_string(port))
+        : source_(port), name_("tcp://0.0.0.0:" + std::to_string(port))
     {
     }
 
@@ -413,7 +413,7 @@ public:
             source = source_;
         }
         if (source != nullptr) {
-            // NetworkCameraSource::release() also interrupts a blocked appsink read.
+            // NetworkCameraSource::release() also interrupts a blocked network read.
             source->release();
         }
         condition_.notify_all();
@@ -479,6 +479,12 @@ private:
                         lock.unlock();
                         if (stop_requested) {
                             break;
+                        }
+                        {
+                            std::lock_guard<std::mutex> stop_lock(mutex_);
+                            if (stop_requested_ || g_stop_requested != 0) {
+                                break;
+                            }
                         }
                         try {
                             source->open();
