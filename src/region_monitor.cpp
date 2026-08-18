@@ -50,14 +50,14 @@ RegionSnapshot RegionMonitor::update(
 
     RegionSnapshot snapshot;
     for (const Detection& detection : tracked_detections) {
-        if (detection.track_id < 0) {
-            continue;
-        }
         if (detection.logical_id >= 0 &&
             detection.lifecycle_state == LogicalObjectState::Cold) {
             continue;
         }
         const int logical_id = detection.logical_id >= 0 ? detection.logical_id : detection.track_id;
+        if (logical_id < 0) {
+            continue;
+        }
         const float center_x = (detection.box.x + detection.box.width * 0.5F) /
                                static_cast<float>(frame_width);
         const float center_y = (detection.box.y + detection.box.height * 0.5F) /

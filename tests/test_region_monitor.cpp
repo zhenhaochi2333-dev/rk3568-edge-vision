@@ -69,6 +69,16 @@ void run_region_monitor_tests()
     assert(two_tracks.new_events.size() == 1U);
     assert(two_tracks.new_events.front().track_id == 7);
 
+    edgevision::Detection logical_only = tracked(-1, 1, 50.0F, 50.0F);
+    logical_only.logical_id = 42;
+    logical_only.lifecycle_state = edgevision::LogicalObjectState::Confirmed;
+    edgevision::RegionMonitor logical_monitor(roi);
+    const auto logical_event = logical_monitor.update(
+        {logical_only}, base, 100, 100);
+    assert(logical_event.new_events.size() == 1U);
+    assert(logical_event.new_events.front().logical_id == 42);
+    assert(logical_event.new_events.front().track_id == 42);
+
     edgevision::RegionMonitor dwell_monitor(roi);
     dwell_monitor.update({tracked(3, 0, 50.0F, 50.0F)}, base, 100, 100);
     const auto before_dwell = dwell_monitor.update(
