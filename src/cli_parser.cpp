@@ -101,6 +101,8 @@ CliParseResult CliParser::parse(int argc, char** argv)
             result.options.camera_path = require_value(index, argc, argv, "--camera");
         } else if (option == "--output") {
             result.options.output_path = require_value(index, argc, argv, "--output");
+        } else if (option == "--track-log") {
+            result.options.track_log_path = require_value(index, argc, argv, "--track-log");
         } else if (option == "--conf") {
             result.options.conf_threshold = parse_float(require_value(index, argc, argv, "--conf"), "--conf");
         } else if (option == "--nms") {
@@ -192,7 +194,7 @@ const char* CliParser::usage()
            "--camera DEVICE [--output OUTPUT]) "
            "[--conf FLOAT] [--nms FLOAT] [--max-frames N] [--show] [--fullscreen] "
            "[--smooth-preview] [--roi X,Y,W,H] [--show-roi] [--force] "
-           "[--tcp] [--tcp-port PORT] [--help]";
+           "[--tcp] [--tcp-port PORT] [--track-log CSV] [--help]";
 }
 
 }  // namespace edgevision

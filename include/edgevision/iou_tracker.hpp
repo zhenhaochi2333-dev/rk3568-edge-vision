@@ -8,8 +8,11 @@
 namespace edgevision {
 
 struct IouTrackerConfig {
-    float iou_threshold = 0.30F;
-    std::size_t max_missed = 4U;
+    // Camera shake can move a small object enough to drop IoU below 0.30
+    // even though it is still the same track. The semantic layer remains the
+    // identity authority, so keep the raw track alive a little longer.
+    float iou_threshold = 0.20F;
+    std::size_t max_missed = 6U;
 };
 
 class IouTracker {

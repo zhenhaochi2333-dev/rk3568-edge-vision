@@ -32,6 +32,11 @@ The default time parameters are:
 | ENTER threshold | 0.60 |
 | EXIT threshold | 0.20 |
 | ENTER stability | 0.40 s |
+| presence alpha | 3.0 |
+| enter threshold | 0.45 |
+| enter stability | 0.20 s |
+| reassociation window | 2.5 s |
+| max lost time | 4.0 s |
 | bootstrap mute | 3.0 s |
 | exited retention | 5.0 s |
 

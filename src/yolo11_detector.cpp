@@ -166,7 +166,23 @@ std::vector<Candidate> classwise_nms(std::vector<Candidate> candidates, float th
                 continue;
             }
             const Candidate& candidate = candidates[static_cast<std::size_t>(order[j])];
-            if (candidate.class_id == current.class_id && iou(current, candidate) > threshold) {
+            const float overlap = iou(current, candidate);
+            const float current_area = current.width * current.height;
+            const float candidate_area = candidate.width * candidate.height;
+            const float size_similarity =
+                (current_area > 0.0F && candidate_area > 0.0F)
+                    ? std::min(current_area, candidate_area) /
+                          std::max(current_area, candidate_area)
+                    : 0.0F;
+            // YOLO heads can assign two different classes to the same
+            // nearly identical box. Suppress that ambiguity before tracking;
+            // legitimate overlapping classes with materially different box
+            // sizes are retained.
+            const bool same_box_different_class =
+                candidate.class_id != current.class_id && overlap >= 0.80F &&
+                size_similarity >= 0.75F;
+            if ((candidate.class_id == current.class_id && overlap > threshold) ||
+                same_box_different_class) {
                 suppressed[j] = true;
             }
         }
@@ -288,7 +304,9 @@ DetectionResult Yolo11Detector::detect_with_metrics(const cv::Mat& bgr)
 
     const auto postprocess_start = std::chrono::steady_clock::now();
     result.detections = decode_raw(views, prepared.letterbox, model_.model_width(),
-                                   model_.model_height(), confidence_threshold_, nms_threshold_);
+                                   model_.model_height(), confidence_threshold_, nms_threshold_,
+                                   &result.decoder_candidate_count,
+                                   &result.nms_suppressed_count);
     const auto postprocess_end = std::chrono::steady_clock::now();
     result.metrics.postprocess_ms =
         std::chrono::duration<double, std::milli>(postprocess_end - postprocess_start).count();
@@ -299,7 +317,9 @@ DetectionResult Yolo11Detector::detect_with_metrics(const cv::Mat& bgr)
 std::vector<Detection> Yolo11Detector::decode_raw(const std::vector<RawTensorView>& outputs,
                                                   const LetterboxInfo& letterbox,
                                                   int model_width, int model_height,
-                                                  float confidence_threshold, float nms_threshold)
+                                                  float confidence_threshold, float nms_threshold,
+                                                  std::size_t* candidate_count,
+                                                  std::size_t* suppressed_count)
 {
     if (!(confidence_threshold >= 0.0F && confidence_threshold <= 1.0F) ||
         !(nms_threshold >= 0.0F && nms_threshold <= 1.0F)) {
@@ -348,7 +368,16 @@ std::vector<Detection> Yolo11Detector::decode_raw(const std::vector<RawTensorVie
         }
     }
 
+    const std::size_t candidates_before_nms = candidates.size();
     const std::vector<Candidate> kept = classwise_nms(std::move(candidates), nms_threshold);
+    if (candidate_count != nullptr) {
+        *candidate_count = candidates_before_nms;
+    }
+    if (suppressed_count != nullptr) {
+        *suppressed_count = candidates_before_nms >= kept.size()
+                                ? candidates_before_nms - kept.size()
+                                : 0U;
+    }
     std::vector<Detection> detections;
     detections.reserve(std::min<std::size_t>(kept.size(), 128U));
     for (const Candidate& candidate : kept) {

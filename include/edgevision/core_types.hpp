@@ -76,6 +76,11 @@ struct FrameMetrics {
 struct DetectionResult {
     std::vector<Detection> detections;
     FrameMetrics metrics;
+    // Decoder-side evidence kept for diagnostics. detections is already after
+    // confidence filtering and NMS; these counters show whether YOLO produced
+    // candidates that were later suppressed before tracking.
+    std::size_t decoder_candidate_count = 0U;
+    std::size_t nms_suppressed_count = 0U;
 };
 
 struct AppOptions {
@@ -85,7 +90,11 @@ struct AppOptions {
     std::string input_path;
     std::string camera_path;
     std::string output_path;
-    float conf_threshold = 0.25F;
+    std::string track_log_path;
+    // 0.15 keeps low-confidence small/edge-entering objects available to the
+    // lifecycle stabilizer. Spatial/class gates still reject duplicate and
+    // far-away flicker boxes.
+    float conf_threshold = 0.15F;
     float nms_threshold = 0.45F;
     int max_frames = 0;
     bool show = false;

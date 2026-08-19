@@ -21,7 +21,9 @@ public:
                                              int model_width,
                                              int model_height,
                                              float confidence_threshold,
-                                             float nms_threshold);
+                                             float nms_threshold,
+                                             std::size_t* candidate_count = nullptr,
+                                             std::size_t* suppressed_count = nullptr);
 
     static std::vector<Detection> nms_for_test(const std::vector<Detection>& detections,
                                                float threshold);

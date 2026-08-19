@@ -95,6 +95,13 @@ bool SemanticStabilizer::can_reassociate(
     const float overlap = intersection_over_union(object.last_box, detection.box);
     const float normalized_distance = center_distance(object.last_box, detection.box) /
                                       std::max(1.0F, image_diagonal);
+    if (object.stable_class_id >= 0 && detection.class_id != object.stable_class_id) {
+        // A class flip may keep the identity only when the new box is almost
+        // the same physical box. Without this gate a distant low-confidence
+        // class (for example a large furniture box) can inherit the cup's
+        // stable label and create a second cup identity beside it.
+        return overlap >= 0.15F || normalized_distance <= 0.05F;
+    }
     // Center distance is the primary cue. IoU is only auxiliary evidence and
     // does not impose a class-dependent gate.
     return normalized_distance <= config_.reassociation_center_distance_ratio ||
@@ -225,14 +232,56 @@ std::vector<Detection> SemanticStabilizer::update(
 
     const float image_diagonal = std::sqrt(static_cast<float>(frame_width * frame_width) +
                                            static_cast<float>(frame_height * frame_height));
-    std::vector<int> assignments(tracked_detections.size(), -1);
+    // A detector/NMS pair can briefly return two boxes for one small object
+    // when the camera shakes. If both are allowed to create candidates, the
+    // second raw track eventually becomes a second logical identity. Collapse
+    // only same-class boxes that overlap or touch; separate adjacent objects
+    // with a gap remain independent.
+    std::vector<Detection> detections;
+    detections.reserve(tracked_detections.size());
+    for (const Detection& candidate : tracked_detections) {
+        int duplicate_index = -1;
+        for (std::size_t kept_index = 0U; kept_index < detections.size(); ++kept_index) {
+            const Detection& kept = detections[kept_index];
+            const float overlap = intersection_over_union(candidate.box, kept.box);
+            const float candidate_area = area(candidate.box);
+            const float kept_area = area(kept.box);
+            const float size_similarity =
+                (candidate_area > 0.0F && kept_area > 0.0F)
+                    ? std::min(candidate_area, kept_area) /
+                          std::max(candidate_area, kept_area)
+                    : 0.0F;
+            const float smallest_box_scale =
+                std::sqrt(std::max(0.0F, std::min(candidate_area, kept_area)));
+            const bool same_class_shaking_object =
+                overlap >= 0.15F ||
+                (overlap > 0.0F && smallest_box_scale > 0.0F &&
+                 center_distance(candidate.box, kept.box) <= 0.75F * smallest_box_scale);
+            const bool same_box_different_class =
+                candidate.class_id != kept.class_id && overlap >= 0.80F &&
+                size_similarity >= 0.75F;
+            if ((candidate.class_id == kept.class_id && same_class_shaking_object) ||
+                same_box_different_class) {
+                duplicate_index = static_cast<int>(kept_index);
+                break;
+            }
+        }
+        if (duplicate_index < 0) {
+            detections.push_back(candidate);
+        } else if (candidate.confidence >
+                   detections[static_cast<std::size_t>(duplicate_index)].confidence) {
+            detections[static_cast<std::size_t>(duplicate_index)] = candidate;
+        }
+    }
+
+    std::vector<int> assignments(detections.size(), -1);
     std::vector<bool> object_matched(objects_.size(), false);
 
     // The raw tracker id is the strongest available cue while it remains
     // within the short real-time reassociation window.
-    for (std::size_t detection_index = 0U; detection_index < tracked_detections.size();
+    for (std::size_t detection_index = 0U; detection_index < detections.size();
          ++detection_index) {
-        const Detection& detection = tracked_detections[detection_index];
+        const Detection& detection = detections[detection_index];
         if (detection.track_id < 0) {
             continue;
         }
@@ -254,12 +303,12 @@ std::vector<Detection> SemanticStabilizer::update(
     // A new raw id can still be the same physical object after a short gap.
     // Greedy matching is sufficient for the small object counts in this
     // embedded path; the score deliberately does not use class as a gate.
-    for (std::size_t detection_index = 0U; detection_index < tracked_detections.size();
+    for (std::size_t detection_index = 0U; detection_index < detections.size();
          ++detection_index) {
         if (assignments[detection_index] >= 0) {
             continue;
         }
-        const Detection& detection = tracked_detections[detection_index];
+        const Detection& detection = detections[detection_index];
         int best_object = -1;
         float best_score = -std::numeric_limits<float>::infinity();
         for (std::size_t object_index = 0U; object_index < objects_.size(); ++object_index) {
@@ -327,10 +376,10 @@ std::vector<Detection> SemanticStabilizer::update(
     }
 
     std::vector<Detection> stabilized;
-    stabilized.reserve(tracked_detections.size());
-    for (std::size_t detection_index = 0U; detection_index < tracked_detections.size();
+    stabilized.reserve(detections.size());
+    for (std::size_t detection_index = 0U; detection_index < detections.size();
          ++detection_index) {
-        const Detection& detection = tracked_detections[detection_index];
+        const Detection& detection = detections[detection_index];
         int object_index = assignments[detection_index];
         if (object_index < 0) {
             if (objects_.size() >= config_.max_live_objects) {

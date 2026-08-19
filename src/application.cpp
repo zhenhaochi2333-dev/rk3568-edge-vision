@@ -35,9 +35,12 @@
 #include <cstdint>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <memory>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -665,10 +668,197 @@ struct SmoothDetectionSnapshot {
     Clock::time_point finished_at{};
 };
 
+struct TraceTiming {
+    std::uint64_t frame_id = 0U;
+    Clock::time_point captured_at{};
+    Clock::time_point detector_started_at{};
+    Clock::time_point detector_finished_at{};
+    Clock::time_point tracker_finished_at{};
+    Clock::time_point stabilizer_finished_at{};
+    Clock::time_point output_at{};
+    FrameMetrics metrics;
+    std::size_t decoder_candidate_count = 0U;
+    std::size_t nms_suppressed_count = 0U;
+};
+
+const char* logical_state_name(LogicalObjectState state)
+{
+    switch (state) {
+    case LogicalObjectState::Candidate:
+        return "candidate";
+    case LogicalObjectState::Active:
+        return "active";
+    case LogicalObjectState::LostPending:
+        return "lost_pending";
+    case LogicalObjectState::Exited:
+        return "exited";
+    }
+    return "unknown";
+}
+
+class TrackTraceWriter {
+public:
+    explicit TrackTraceWriter(const std::string& path)
+    {
+        if (path.empty()) {
+            return;
+        }
+        output_.open(path);
+        if (!output_.is_open()) {
+            throw std::runtime_error("cannot open track trace: " + path);
+        }
+        output_ << "frame_id,stage,timestamp_ms,captured_ms,detector_start_ms,"
+                   "detector_end_ms,tracker_end_ms,stabilizer_end_ms,output_ms,"
+                   "capture_to_stage_ms,detector_ms,tracker_ms,stabilizer_ms,"
+                   "preprocess_ms,inference_ms,postprocess_ms,output_latency_ms,"
+                   "decoder_candidates,nms_suppressed_count,stage_detection_count,"
+                   "class_id,confidence,x,y,width,height,track_id,logical_id,state,"
+                   "suppress_enter\n";
+    }
+
+    bool enabled() const
+    {
+        return output_.is_open();
+    }
+
+    void write(const TraceTiming& timing,
+               const std::vector<Detection>& raw,
+               const std::vector<Detection>& tracked,
+               const std::vector<Detection>& stabilized)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!enabled()) {
+            return;
+        }
+        ensure_epoch_locked(timing.captured_at);
+        pending_timings_[timing.frame_id] = timing;
+        write_stage_locked(timing, "raw", timing.detector_finished_at, raw);
+        write_stage_locked(timing, "tracked", timing.tracker_finished_at, tracked);
+        write_stage_locked(timing, "stabilized", timing.stabilizer_finished_at, stabilized);
+        trim_pending_locked();
+        output_.flush();
+    }
+
+    // Records when an annotated frame leaves the application. In network mode
+    // this is called once for RTSP publication and once for the local board
+    // window, so the trace separates inference latency from display latency.
+    void mark_output(std::uint64_t frame_id, const char* stage,
+                     Clock::time_point output_at, bool finalize)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!enabled()) {
+            return;
+        }
+        const auto iterator = pending_timings_.find(frame_id);
+        if (iterator == pending_timings_.end()) {
+            return;
+        }
+        TraceTiming timing = iterator->second;
+        timing.output_at = output_at;
+        write_detection_row_locked(timing, stage, output_at, nullptr, 0U);
+        if (finalize) {
+            pending_timings_.erase(pending_timings_.begin(),
+                                   pending_timings_.upper_bound(frame_id));
+        }
+        output_.flush();
+    }
+
+private:
+    static double elapsed_ms(Clock::time_point end, Clock::time_point start)
+    {
+        if (end == Clock::time_point{} || start == Clock::time_point{}) {
+            return -1.0;
+        }
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    }
+
+    void ensure_epoch_locked(Clock::time_point captured_at)
+    {
+        if (!first_timestamp_.has_value()) {
+            first_timestamp_ = captured_at;
+        }
+    }
+
+    double relative_ms_locked(Clock::time_point timestamp) const
+    {
+        return first_timestamp_.has_value() && timestamp != Clock::time_point{}
+                   ? elapsed_ms(timestamp, *first_timestamp_)
+                   : -1.0;
+    }
+
+    void write_stage_locked(const TraceTiming& timing, const char* stage,
+                            Clock::time_point stage_at,
+                            const std::vector<Detection>& detections)
+    {
+        if (detections.empty()) {
+            write_detection_row_locked(timing, stage, stage_at, nullptr, 0U);
+            return;
+        }
+        for (const Detection& detection : detections) {
+            write_detection_row_locked(timing, stage, stage_at, &detection,
+                                       detections.size());
+        }
+    }
+
+    void write_detection_row_locked(const TraceTiming& timing, const char* stage,
+                                    Clock::time_point stage_at,
+                                    const Detection* detection,
+                                    std::size_t stage_detection_count)
+    {
+        const double detector_ms = elapsed_ms(timing.detector_finished_at,
+                                               timing.detector_started_at);
+        const double tracker_ms = elapsed_ms(timing.tracker_finished_at,
+                                              timing.detector_finished_at);
+        const double stabilizer_ms = elapsed_ms(timing.stabilizer_finished_at,
+                                                timing.tracker_finished_at);
+        const double output_latency_ms = elapsed_ms(timing.output_at,
+                                                    timing.stabilizer_finished_at);
+        output_ << std::fixed << std::setprecision(3)
+                << timing.frame_id << ',' << stage << ','
+                << relative_ms_locked(stage_at) << ','
+                << relative_ms_locked(timing.captured_at) << ','
+                << relative_ms_locked(timing.detector_started_at) << ','
+                << relative_ms_locked(timing.detector_finished_at) << ','
+                << relative_ms_locked(timing.tracker_finished_at) << ','
+                << relative_ms_locked(timing.stabilizer_finished_at) << ','
+                << relative_ms_locked(timing.output_at) << ','
+                << elapsed_ms(stage_at, timing.captured_at) << ','
+                << detector_ms << ',' << tracker_ms << ',' << stabilizer_ms << ','
+                << timing.metrics.preprocess_ms << ',' << timing.metrics.inference_ms << ','
+                << timing.metrics.postprocess_ms << ',' << output_latency_ms << ','
+                << timing.decoder_candidate_count << ',' << timing.nms_suppressed_count << ','
+                << stage_detection_count;
+        if (detection == nullptr) {
+            output_ << ",,,,,,,,,,\n";
+            return;
+        }
+        output_ << ',' << detection->class_id << ',' << detection->confidence << ','
+                << detection->box.x << ',' << detection->box.y << ','
+                << detection->box.width << ',' << detection->box.height << ','
+                << detection->track_id << ',' << detection->logical_id << ','
+                << logical_state_name(detection->lifecycle_state) << ','
+                << (detection->suppress_enter ? 1 : 0) << '\n';
+    }
+
+    void trim_pending_locked()
+    {
+        while (pending_timings_.size() > 256U) {
+            pending_timings_.erase(pending_timings_.begin());
+        }
+    }
+
+    std::ofstream output_;
+    mutable std::mutex mutex_;
+    std::optional<Clock::time_point> first_timestamp_;
+    std::map<std::uint64_t, TraceTiming> pending_timings_;
+};
+
 class SmoothAiWorker {
 public:
-    SmoothAiWorker(Yolo11Detector& detector, const NormalizedRoi* roi)
+    SmoothAiWorker(Yolo11Detector& detector, const NormalizedRoi* roi,
+                   TrackTraceWriter* trace_writer)
         : detector_(detector),
+          trace_writer_(trace_writer),
           region_monitor_(roi == nullptr
                               ? nullptr
                               : std::unique_ptr<RegionMonitor>(new RegionMonitor(*roi))),
@@ -763,13 +953,30 @@ private:
 
             try {
                 const cv::Mat& frame = frame_snapshot->frame;
-                const Clock::time_point ai_start = Clock::now();
+                const Clock::time_point detector_started_at = Clock::now();
                 const DetectionResult result = detector_.detect_with_metrics(frame);
-                const Clock::time_point finished_at = Clock::now();
+                const Clock::time_point detector_finished_at = Clock::now();
                 const std::vector<Detection> tracked_detections = tracker_.update(result.detections);
+                const Clock::time_point tracker_finished_at = Clock::now();
                 std::vector<Detection> stabilized_detections =
                     stabilizer_.update(tracked_detections, frame_snapshot->captured_at,
                                        frame.cols, frame.rows);
+                const Clock::time_point stabilizer_finished_at = Clock::now();
+                if (trace_writer_ != nullptr) {
+                    trace_writer_->write(TraceTiming{
+                                             frame_snapshot->sequence,
+                                             frame_snapshot->captured_at,
+                                             detector_started_at,
+                                             detector_finished_at,
+                                             tracker_finished_at,
+                                             stabilizer_finished_at,
+                                             {},
+                                             result.metrics,
+                                             result.decoder_candidate_count,
+                                             result.nms_suppressed_count},
+                                         result.detections, tracked_detections,
+                                         stabilized_detections);
+                }
                 RegionSnapshot region;
                 if (region_monitor_ != nullptr) {
                     region = region_monitor_->update(stabilized_detections,
@@ -779,7 +986,9 @@ private:
                 FrameMetrics metrics = result.metrics;
                 metrics.object_count = static_cast<double>(stabilized_detections.size());
                 metrics.ai_latency_ms =
-                    std::chrono::duration<double, std::milli>(finished_at - ai_start).count();
+                    std::chrono::duration<double, std::milli>(stabilizer_finished_at -
+                                                             detector_started_at)
+                        .count();
 
                 std::lock_guard<std::mutex> lock(mutex_);
                 latest_.generation += 1U;
@@ -788,7 +997,7 @@ private:
                 latest_.metrics = metrics;
                 latest_.region = std::move(region);
                 latest_.captured_at = frame_snapshot->captured_at;
-                latest_.finished_at = finished_at;
+                latest_.finished_at = stabilizer_finished_at;
                 busy_ = false;
             } catch (const std::exception& error) {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -813,6 +1022,7 @@ private:
     Yolo11Detector& detector_;
     IouTracker tracker_;
     SemanticStabilizer stabilizer_;
+    TrackTraceWriter* trace_writer_ = nullptr;
     std::unique_ptr<RegionMonitor> region_monitor_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
@@ -854,6 +1064,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
 #endif
 
     SignalGuard signal_guard;
+    TrackTraceWriter trace_writer(options.track_log_path);
     const bool network_input = options.input_mode == InputMode::NetworkCamera;
     const int output_width = network_input ? 1280 : DisplayComposer::kDefaultDisplayWidth;
     const int output_height = network_input ? 720 : DisplayComposer::kDefaultDisplayHeight;
@@ -892,7 +1103,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
         throw std::runtime_error(std::string("smooth-preview window setup failed: ") + error.what());
     }
 
-    SmoothAiWorker worker(detector, options.roi_enabled ? &options.roi : nullptr);
+    SmoothAiWorker worker(detector, options.roi_enabled ? &options.roi : nullptr,
+                          &trace_writer);
     DisplayComposer composer(labels, output_width, output_height);
     const NormalizedRoi* active_roi = options.roi_enabled ? &options.roi : nullptr;
     std::shared_ptr<const CameraFrameSnapshot> frame_snapshot;
@@ -900,6 +1112,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     std::vector<RegionEvent> latest_new_events;
     FrameMetrics latest_metrics;
     Clock::time_point latest_result_finished{};
+    std::uint64_t latest_trace_frame_id = 0U;
+    std::uint64_t displayed_trace_generation = 0U;
     std::uint64_t last_displayed_sequence = 0U;
     std::uint64_t last_generation = 0U;
     std::size_t displayed_frames = 0U;
@@ -971,6 +1185,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 latest_new_events = snapshot.region.new_events;
                 latest_metrics = snapshot.metrics;
                 latest_result_finished = snapshot.finished_at;
+                latest_trace_frame_id = snapshot.source_frame_id;
                 publish_region_events(tcp_server, snapshot.region.new_events, labels);
             }
             const double snapshot_copy_ms =
@@ -1019,6 +1234,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
 #if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
             if (rtsp_streamer != nullptr) {
                 rtsp_streamer->publish(composed);
+                trace_writer.mark_output(latest_trace_frame_id, "rtsp_publish",
+                                         Clock::now(), false);
             }
 #endif
             const DisplayComposeTimings& compose_timings = composer.last_timings();
@@ -1041,6 +1258,11 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 }
             } catch (const cv::Exception& error) {
                 throw std::runtime_error(std::string("smooth-preview display failed: ") + error.what());
+            }
+            if (last_generation != 0U && displayed_trace_generation != last_generation) {
+                trace_writer.mark_output(latest_trace_frame_id, "local_display",
+                                         Clock::now(), true);
+                displayed_trace_generation = last_generation;
             }
             ++displayed_frames;
 
@@ -1300,6 +1522,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
     Clock::time_point profile_wall_start{};
     Clock::time_point profile_wall_end{};
     DisplayComposer composer(labels);
+    TrackTraceWriter trace_writer(options.track_log_path);
     IouTracker tracker;
     SemanticStabilizer stabilizer;
     std::unique_ptr<RegionMonitor> region_monitor;
@@ -1334,10 +1557,27 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
 
         const auto e2e_start = Clock::now();
         const auto captured_at = Clock::now();
+        const auto detector_started_at = Clock::now();
         const DetectionResult result = detector.detect_with_metrics(frame);
+        const auto detector_finished_at = Clock::now();
         const std::vector<Detection> tracked_detections = tracker.update(result.detections);
+        const auto tracker_finished_at = Clock::now();
         const std::vector<Detection> stabilized_detections =
             stabilizer.update(tracked_detections, captured_at, frame.cols, frame.rows);
+        const auto stabilizer_finished_at = Clock::now();
+        const std::uint64_t trace_frame_id = static_cast<std::uint64_t>(processed + 1U);
+        trace_writer.write(TraceTiming{
+                               trace_frame_id,
+                               captured_at,
+                               detector_started_at,
+                               detector_finished_at,
+                               tracker_finished_at,
+                               stabilizer_finished_at,
+                               {},
+                               result.metrics,
+                               result.decoder_candidate_count,
+                               result.nms_suppressed_count},
+                           result.detections, tracked_detections, stabilized_detections);
         RegionSnapshot region;
         if (region_monitor != nullptr) {
             region = region_monitor->update(stabilized_detections, captured_at,
@@ -1370,6 +1610,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
         if (record_output) {
             const auto writer_start = Clock::now();
             output.write(output_frame);
+            trace_writer.mark_output(trace_frame_id, "file_output", Clock::now(), !preview);
             writer_ms =
                 std::chrono::duration<double, std::milli>(Clock::now() - writer_start).count();
         }
@@ -1397,6 +1638,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
                 if (key == 27 || key == 'q' || key == 'Q') {
                     g_stop_requested = 1;
                 }
+                trace_writer.mark_output(trace_frame_id, "local_display", Clock::now(), true);
             } catch (const cv::Exception& error) {
                 log_warn(std::string("Local GUI session unavailable; camera preview disabled: ") +
                          error.what());

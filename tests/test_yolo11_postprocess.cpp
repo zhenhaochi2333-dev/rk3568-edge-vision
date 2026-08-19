@@ -85,7 +85,6 @@ void run_yolo11_postprocess_tests()
     };
     const std::vector<edgevision::Detection> kept =
         edgevision::Yolo11Detector::nms_for_test(overlapping, 0.45F);
-    assert(kept.size() == 2U);
+    assert(kept.size() == 1U);
     assert(kept.front().class_id == 0 && std::fabs(kept.front().confidence - 0.9F) < 1e-5F);
-    assert(kept.back().class_id == 1);
 }

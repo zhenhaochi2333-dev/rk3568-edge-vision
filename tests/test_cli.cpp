@@ -62,6 +62,14 @@ void run_cli_tests()
     assert(valid.options.roi.y == 0.0F);
     assert(valid.options.roi.width == 1.0F);
     assert(valid.options.roi.height == 1.0F);
+    const edgevision::CliParseResult defaults = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--input", "bus.jpg", "--output", "out.png"});
+    assert(defaults.options.conf_threshold == 0.15F);
+    const edgevision::CliParseResult trace = parse({
+        "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
+        "--input", "bus.jpg", "--output", "out.png", "--track-log", "trace.csv"});
+    assert(trace.options.track_log_path == "trace.csv");
     const edgevision::CliParseResult tcp = parse({
         "edge_vision", "--model", "model.rknn", "--labels", "labels.txt",
         "--input", "bus.jpg", "--output", "out.png", "--tcp-port", "9010"});

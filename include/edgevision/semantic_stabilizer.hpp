@@ -11,15 +11,21 @@
 namespace edgevision {
 
 struct SemanticStabilizerConfig {
-    double reassociation_window_seconds = 1.2;
-    double max_lost_time_seconds = 2.0;
+    // The board inference loop is slower than the 15 FPS camera stream. A
+    // fixed scene can therefore have a 2 s detector gap without the object
+    // having left the frame.
+    double reassociation_window_seconds = 2.5;
+    double max_lost_time_seconds = 4.0;
     float reassociation_center_distance_ratio = 0.20F;
     float reassociation_iou_threshold = 0.05F;
-    float presence_alpha = 2.0F;
+    // At the validated 15 FPS network input this reaches the enter gate in
+    // roughly 0.4 s for a strong detection, while the stability hold keeps
+    // one-frame flashes out of the event stream.
+    float presence_alpha = 3.0F;
     float presence_beta = 0.5F;
-    float enter_threshold = 0.60F;
+    float enter_threshold = 0.45F;
     float exit_threshold = 0.20F;
-    double enter_stability_seconds = 0.40;
+    double enter_stability_seconds = 0.20;
     double bootstrap_mute_seconds = 3.0;
     double exited_retention_seconds = 5.0;
     std::size_t max_live_objects = 50U;

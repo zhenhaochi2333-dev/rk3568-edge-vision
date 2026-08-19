@@ -111,7 +111,10 @@ void run_semantic_stabilizer_tests()
 
     // F: after the reassociation window a nearby detection starts a new id.
     {
-        auto stabilizer = make_stabilizer();
+        edgevision::SemanticStabilizerConfig config;
+        config.reassociation_window_seconds = 1.2;
+        config.max_lost_time_seconds = 2.0;
+        auto stabilizer = edgevision::SemanticStabilizer(config);
         const auto first = activate(stabilizer, base, 50, 0, 100.0F);
         assert(first.size() == 1U);
         assert(stabilizer.update({}, base + std::chrono::seconds(1)).empty());
@@ -124,6 +127,17 @@ void run_semantic_stabilizer_tests()
         const auto second = stabilizer.update({detection(51, 0, 104.0F, 100.0F)},
                                               base + std::chrono::milliseconds(3200));
         assert(second.size() == 1U && second.front().logical_id != first.front().logical_id);
+    }
+
+    // F2: a far-away class flip cannot inherit the old object's label.
+    {
+        auto stabilizer = make_stabilizer();
+        const auto first = activate(stabilizer, base, 55, 41, 100.0F);
+        assert(first.size() == 1U && first.front().class_id == 41);
+        const auto flipped = stabilizer.update(
+            {detection(56, 72, 700.0F, 500.0F, 0.9F)},
+            base + std::chrono::milliseconds(1200));
+        assert(flipped.empty());
     }
 
     // G: a brief flash never reaches the ENTER hysteresis.
@@ -140,6 +154,46 @@ void run_semantic_stabilizer_tests()
         assert(monitor.update(stabilizer.update({}, base + std::chrono::milliseconds(400)),
                               base + std::chrono::milliseconds(400), 1280, 720)
                    .new_events.empty());
+    }
+
+    // G2: duplicate same-class boxes from camera shake do not create a second
+    // logical cup/object, even when the raw tracker ids change every frame.
+    {
+        auto stabilizer = make_stabilizer();
+        const auto first = activate(stabilizer, base, 90, 41, 300.0F, 0.9F);
+        assert(first.size() == 1U);
+        const int logical_id = first.front().logical_id;
+        for (int index = 0; index < 8; ++index) {
+            const auto timestamp = base + std::chrono::milliseconds(1000 + index * 200);
+            const auto output = stabilizer.update(
+                {detection(100 + index * 2, 41, 300.0F + index, 100.0F, 0.9F),
+                 detection(101 + index * 2, 41, 324.0F + index, 100.0F, 0.7F)},
+                timestamp);
+            assert(output.size() == 1U);
+            assert(output.front().logical_id == logical_id);
+        }
+    }
+
+    // G3: two nearly identical boxes with different raw classes still render
+    // as one physical object; the stronger box wins.
+    {
+        auto stabilizer = make_stabilizer();
+        assert(stabilizer.update(
+                   {detection(200, 62, 500.0F, 200.0F, 0.80F),
+                    detection(201, 68, 501.0F, 201.0F, 0.70F)},
+                   base)
+                   .empty());
+        assert(stabilizer.update(
+                   {detection(202, 62, 500.0F, 200.0F, 0.80F),
+                    detection(203, 68, 501.0F, 201.0F, 0.70F)},
+                   base + std::chrono::milliseconds(400))
+                   .empty());
+        const auto output = stabilizer.update(
+            {detection(204, 62, 500.0F, 200.0F, 0.80F),
+             detection(205, 68, 501.0F, 201.0F, 0.70F)},
+            base + std::chrono::milliseconds(800));
+        assert(output.size() == 1U);
+        assert(output.front().class_id == 62);
     }
 
     // H/I: a short absence does not EXIT, and DWELL is emitted once.

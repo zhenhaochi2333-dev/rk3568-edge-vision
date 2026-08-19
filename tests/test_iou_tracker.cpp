@@ -33,6 +33,13 @@ void run_iou_tracker_tests()
     assert(second_result[0].track_id == 1);
     assert(second_result[1].track_id == 2);
 
+    // A small object can move far enough under camera shake to fall below
+    // the old 0.30 IoU gate. The default tracker keeps the same raw identity.
+    edgevision::IouTracker jitter_tracker;
+    const auto jitter_first = jitter_tracker.update({detection(0, 100, 100, 40, 40)});
+    const auto jitter_second = jitter_tracker.update({detection(0, 124, 100, 40, 40)});
+    assert(jitter_first.front().track_id == jitter_second.front().track_id);
+
     // Different classes cannot steal an existing track, and matches are one-to-one.
     const std::vector<edgevision::Detection> class_changed{
         detection(2, 12.0F, 11.0F, 40.0F, 40.0F),
