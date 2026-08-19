@@ -5,30 +5,41 @@
 #include <chrono>
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <vector>
 
 namespace edgevision {
 
 struct SemanticStabilizerConfig {
-    float reassociation_iou_threshold = 0.20F;
-    float reassociation_center_distance_ratio = 1.50F;
-    std::size_t max_missed_frames = 8U;
-    std::size_t confirm_frames = 3U;
-    float missing_presence_decay = 0.80F;
-    float class_evidence_decay = 0.85F;
-    std::size_t class_switch_confirmations = 3U;
+    double reassociation_window_seconds = 1.2;
+    double max_lost_time_seconds = 2.0;
+    float reassociation_center_distance_ratio = 0.20F;
+    float reassociation_iou_threshold = 0.05F;
+    float presence_alpha = 2.0F;
+    float presence_beta = 0.5F;
+    float enter_threshold = 0.60F;
+    float exit_threshold = 0.20F;
+    double enter_stability_seconds = 0.40;
+    double bootstrap_mute_seconds = 3.0;
+    double exited_retention_seconds = 5.0;
+    std::size_t max_live_objects = 50U;
+    float class_switch_evidence_ratio = 1.30F;
+    double class_switch_hold_seconds = 0.70;
+    float class_evidence_decay_per_second = 0.995F;
 };
 
 class SemanticStabilizer {
 public:
     explicit SemanticStabilizer(SemanticStabilizerConfig config = {});
 
-    // The returned vector contains only confirmed objects observed in this
-    // update. Missing objects remain in the internal lifecycle so a short
+    // The returned vector contains only ACTIVE objects observed in this
+    // update. CANDIDATE and LOST_PENDING objects remain internal so a short
     // detector/tracker gap does not create a new logical identity.
     std::vector<Detection> update(
         const std::vector<Detection>& tracked_detections,
-        std::chrono::steady_clock::time_point source_timestamp);
+        std::chrono::steady_clock::time_point source_timestamp,
+        int frame_width = 1280,
+        int frame_height = 720);
 
     void reset();
 
@@ -42,27 +53,40 @@ private:
         cv::Rect2f last_box;
         int stable_class_id = -1;
         int pending_class_id = -1;
-        std::size_t pending_class_frames = 0U;
-        std::size_t observations = 0U;
-        std::size_t missed_frames = 0U;
+        std::optional<std::chrono::steady_clock::time_point> class_switch_started_at;
+        std::optional<std::chrono::steady_clock::time_point> enter_threshold_reached_at;
+        std::chrono::steady_clock::time_point first_seen{};
+        std::chrono::steady_clock::time_point last_update{};
+        std::chrono::steady_clock::time_point last_seen{};
+        std::chrono::steady_clock::time_point exited_at{};
         float presence_score = 0.0F;
         float fused_confidence = 0.0F;
-        LogicalObjectState state = LogicalObjectState::Cold;
-        bool ever_confirmed = false;
+        LogicalObjectState state = LogicalObjectState::Candidate;
+        bool bootstrap_baseline = false;
+        bool initialized = false;
+        bool has_seen = false;
+        bool active_before_loss = false;
         std::map<int, float> class_evidence;
-        std::chrono::steady_clock::time_point last_seen{};
     };
 
     static float area(const cv::Rect2f& box);
     static float center_distance(const cv::Rect2f& first,
                                  const cv::Rect2f& second);
 
-    bool can_reassociate(const LogicalObject& object, const Detection& detection) const;
-    void update_class_fusion(LogicalObject& object, const Detection& detection);
+    bool can_reassociate(const LogicalObject& object,
+                         const Detection& detection,
+                         std::chrono::steady_clock::time_point source_timestamp,
+                         float image_diagonal) const;
+    void update_class_fusion(LogicalObject& object,
+                             const Detection& detection,
+                             std::chrono::steady_clock::time_point source_timestamp,
+                             double dt_seconds);
+    void evict_for_capacity();
 
     SemanticStabilizerConfig config_;
     std::vector<LogicalObject> objects_;
     int next_logical_id_ = 1;
+    std::optional<std::chrono::steady_clock::time_point> bootstrap_started_at_;
 };
 
 }  // namespace edgevision

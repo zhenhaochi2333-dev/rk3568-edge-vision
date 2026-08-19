@@ -36,7 +36,8 @@ struct RegionSnapshot {
 class RegionMonitor {
 public:
     explicit RegionMonitor(NormalizedRoi roi, double dwell_seconds = 3.0,
-                           std::size_t max_recent_events = 16U);
+                           std::size_t max_recent_events = 16U,
+                           double max_lost_seconds = 2.0);
 
     RegionSnapshot update(const std::vector<Detection>& tracked_detections,
                           std::chrono::steady_clock::time_point source_timestamp,
@@ -50,9 +51,13 @@ public:
 private:
     struct TrackState {
         int class_id = -1;
+        float confidence = 0.0F;
         bool inside = false;
         bool dwell_emitted = false;
         std::chrono::steady_clock::time_point entered_at{};
+        std::chrono::steady_clock::time_point last_observed_at{};
+        double dwell_accumulated_seconds = 0.0;
+        bool missing = false;
     };
 
     void append_event(const RegionEvent& event, RegionSnapshot& snapshot);
@@ -60,6 +65,7 @@ private:
     NormalizedRoi roi_;
     double dwell_seconds_;
     std::size_t max_recent_events_;
+    double max_lost_seconds_;
     std::map<int, TrackState> states_;
     std::deque<RegionEvent> recent_events_;
 };

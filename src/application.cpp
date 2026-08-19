@@ -768,7 +768,8 @@ private:
                 const Clock::time_point finished_at = Clock::now();
                 const std::vector<Detection> tracked_detections = tracker_.update(result.detections);
                 std::vector<Detection> stabilized_detections =
-                    stabilizer_.update(tracked_detections, frame_snapshot->captured_at);
+                    stabilizer_.update(tracked_detections, frame_snapshot->captured_at,
+                                       frame.cols, frame.rows);
                 RegionSnapshot region;
                 if (region_monitor_ != nullptr) {
                     region = region_monitor_->update(stabilized_detections,
@@ -1336,7 +1337,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
         const DetectionResult result = detector.detect_with_metrics(frame);
         const std::vector<Detection> tracked_detections = tracker.update(result.detections);
         const std::vector<Detection> stabilized_detections =
-            stabilizer.update(tracked_detections, captured_at);
+            stabilizer.update(tracked_detections, captured_at, frame.cols, frame.rows);
         RegionSnapshot region;
         if (region_monitor != nullptr) {
             region = region_monitor->update(stabilized_detections, captured_at,

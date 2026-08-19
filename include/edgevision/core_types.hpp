@@ -10,10 +10,10 @@
 namespace edgevision {
 
 enum class LogicalObjectState {
-    Cold,
-    Confirmed,
-    Missing,
-    Removed,
+    Candidate,
+    Active,
+    LostPending,
+    Exited,
 };
 
 struct Detection {
@@ -23,7 +23,11 @@ struct Detection {
     int track_id = -1;
     int logical_id = -1;
     float presence_score = 0.0F;
-    LogicalObjectState lifecycle_state = LogicalObjectState::Cold;
+    LogicalObjectState lifecycle_state = LogicalObjectState::Candidate;
+    // Suppresses the first ROI ENTER for objects that were already stable
+    // during the bootstrap mute window. It is metadata-only and is consumed
+    // by RegionMonitor; it never changes the logical identity.
+    bool suppress_enter = false;
 };
 
 struct LetterboxInfo {

@@ -71,7 +71,7 @@ void run_region_monitor_tests()
 
     edgevision::Detection logical_only = tracked(-1, 1, 50.0F, 50.0F);
     logical_only.logical_id = 42;
-    logical_only.lifecycle_state = edgevision::LogicalObjectState::Confirmed;
+    logical_only.lifecycle_state = edgevision::LogicalObjectState::Active;
     edgevision::RegionMonitor logical_monitor(roi);
     const auto logical_event = logical_monitor.update(
         {logical_only}, base, 100, 100);
