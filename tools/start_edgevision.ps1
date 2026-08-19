@@ -123,6 +123,10 @@ try {
     Wait-Port $BoardIp $TcpEventPort "TCP event server"
     Wait-Port $BoardIp $RtspPort "RTSP server"
 
+    # Give DirectShow/SDL workers from a previous Ctrl+C a short window to
+    # release the camera before the next bridge owns it.
+    Start-Sleep -Seconds 8
+
     $bridgeStdout = Join-Path $RuntimeDir "pc-bridge.stdout.log"
     $bridgeStderr = Join-Path $RuntimeDir "pc-bridge.stderr.log"
     $bridgeArguments = "--ffmpeg `"$FfmpegPath`" --camera `"$CameraName`" --board $BoardIp --input-port $NetworkVideoPort --rtsp-port $RtspPort"

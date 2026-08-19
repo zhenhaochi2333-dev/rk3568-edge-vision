@@ -25,18 +25,13 @@ The default time parameters are:
 
 | Parameter | Default |
 | --- | ---: |
-| reassociation window | 1.2 s |
-| maximum lost time | 2.0 s |
-| presence detection gain | 2.0 / s |
-| presence missing decay | 0.5 / s |
-| ENTER threshold | 0.60 |
-| EXIT threshold | 0.20 |
-| ENTER stability | 0.40 s |
-| presence alpha | 3.0 |
-| enter threshold | 0.45 |
-| enter stability | 0.20 s |
 | reassociation window | 2.5 s |
-| max lost time | 4.0 s |
+| maximum lost time | 4.0 s |
+| presence alpha | 3.0 / s |
+| presence missing decay | 0.5 / s |
+| ENTER threshold | 0.45 |
+| EXIT threshold | 0.20 |
+| ENTER stability | 0.20 s |
 | bootstrap mute | 3.0 s |
 | exited retention | 5.0 s |
 

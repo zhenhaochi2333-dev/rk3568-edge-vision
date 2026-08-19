@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(EDGEVISION_BUILD_TESTS "Build lightweight Phase 0-5 tests" ON)
+option(EDGEVISION_BUILD_TESTS "Build the regression test executable" ON)
 option(EDGEVISION_WITH_VIDEO "Build VideoIO and video pipeline support" ON)
 option(EDGEVISION_WITH_RTSP "Build the GStreamer RTSP detection stream" OFF)
 option(EDGEVISION_BUILD_BENCHMARKS "Build standalone RKNN timing tools" OFF)
