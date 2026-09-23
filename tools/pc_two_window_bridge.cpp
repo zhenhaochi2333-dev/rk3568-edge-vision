@@ -1,3 +1,6 @@
+/* Windows 侧启动三个 FFmpeg 子进程：JPEG/TCP 发送、原始预览、RTSP 检测预览。
+ * 发送与两个窗口分别运行；PC 侧不会直接执行 RKNN 推理。
+ */
 #ifdef _WIN32
 
 #include <windows.h>
@@ -145,6 +148,7 @@ Options parse_options(int argc, char** argv)
     return options;
 }
 
+// DirectShow 以 1280x720 NV12/30 FPS 取像；发送支路随后降为 15 FPS MJPEG。
 std::string camera_input(const Options& options)
 {
     return "-hide_banner -loglevel warning -rtbufsize 64M "
@@ -175,6 +179,7 @@ int main(int argc, char** argv)
         ChildProcess raw_preview{"raw camera preview"};
         ChildProcess detection_preview{"board detection preview"};
 
+        // -f mjpeg 把连续 JPEG 帧写到板端 TCP :5600；接收端按 JPEG 标记恢复帧边界。
         const bool sender_started = start_child(
             sender, options.ffmpeg,
             camera + " -vf fps=15 -q:v 3 -an -f mjpeg " + quote(sender_url));
@@ -185,6 +190,7 @@ int main(int argc, char** argv)
         // H.264 dimensions. Starting the viewer at the same instant as the
         // sender makes FFmpeg occasionally exit with "unspecified size".
         std::this_thread::sleep_for(std::chrono::seconds(3));
+        // 预览读取的是板端重新编码的 RTSP H.264 结果，与原始发送支路独立。
         bool detection_started = false;
         for (int attempt = 0; attempt < 4 && !stop_requested.load(); ++attempt) {
             if (start_child(

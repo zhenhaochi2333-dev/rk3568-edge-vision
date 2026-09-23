@@ -1,3 +1,8 @@
+/*
+ * 正式网络演示的数据流：PC JPEG/TCP -> BGR 帧 -> YOLO11 RKNN -> 原始 IoU 跟踪
+ * -> 语义 logical_id -> ROI 事件 -> 本地显示、RTSP 和 TCP 事件。
+ * 图像、视频和板载 V4L2 摄像头使用同一个检测器，但有各自的输入/输出循环。
+ */
 #include "edgevision/application.hpp"
 
 #include "edgevision/display_composer.hpp"
@@ -310,6 +315,7 @@ private:
     const std::string name_;
 };
 
+// 采集线程与显示、AI 解耦：只保留最新的完整帧，消费者慢时覆盖旧帧而不排队累积延迟。
 class CameraCaptureThread {
 public:
     explicit CameraCaptureThread(std::shared_ptr<CaptureInput> source)
@@ -342,6 +348,7 @@ public:
         }
     }
 
+    // sequence 避免重复消费同一帧；shared_ptr 让 UI/AI 持有快照时底层 Mat 继续存活。
     bool wait_for_new(std::shared_ptr<const CameraFrameSnapshot>& snapshot,
                       std::uint64_t last_sequence)
     {
@@ -467,6 +474,7 @@ private:
                 }
 
                 const Clock::time_point camera_read_start = Clock::now();
+                // 输入可能暂时读不到完整帧；连续失败后重开本地设备或网络监听以恢复采集。
                 if (!source->read(capture_frame)) {
                     camera_read_ms_total_ +=
                         std::chrono::duration<double, std::milli>(Clock::now() - camera_read_start)
@@ -658,6 +666,7 @@ struct RealtimeDisplayProfileTotals {
     }
 };
 
+// AI 结果带源帧序号和完成时间；显示线程可复用上一轮结果并计算结果年龄。
 struct SmoothDetectionSnapshot {
     std::uint64_t generation = 0U;
     std::uint64_t source_frame_id = 0U;
@@ -696,6 +705,7 @@ const char* logical_state_name(LogicalObjectState state)
     return "unknown";
 }
 
+// 可选 CSV 追踪保留 raw/tracked/stabilized 与输出时刻，便于分开观察算法和显示延迟。
 class TrackTraceWriter {
 public:
     explicit TrackTraceWriter(const std::string& path)
@@ -853,6 +863,7 @@ private:
     std::map<std::uint64_t, TraceTiming> pending_timings_;
 };
 
+// 单独线程串行执行检测、跟踪、稳定与 ROI 更新；一个待处理槽位限制推理积压。
 class SmoothAiWorker {
 public:
     SmoothAiWorker(Yolo11Detector& detector, const NormalizedRoi* roi,
@@ -875,6 +886,7 @@ public:
     SmoothAiWorker(const SmoothAiWorker&) = delete;
     SmoothAiWorker& operator=(const SmoothAiWorker&) = delete;
 
+    // AI 忙或已有待处理帧时拒绝提交；采集与显示不必等待较慢的 NPU 推理。
     bool submit(std::shared_ptr<const CameraFrameSnapshot> frame_snapshot)
     {
         if (frame_snapshot == nullptr) {
@@ -954,6 +966,7 @@ private:
             try {
                 const cv::Mat& frame = frame_snapshot->frame;
                 const Clock::time_point detector_started_at = Clock::now();
+                // 原始检测框仍是源图坐标；tracker 给短期 track_id，稳定器给业务 logical_id。
                 const DetectionResult result = detector_.detect_with_metrics(frame);
                 const Clock::time_point detector_finished_at = Clock::now();
                 const std::vector<Detection> tracked_detections = tracker_.update(result.detections);
@@ -978,6 +991,7 @@ private:
                                          stabilized_detections);
                 }
                 RegionSnapshot region;
+                // ROI 只接收稳定后的活动对象，并用源帧时间推进驻留/丢失计时。
                 if (region_monitor_ != nullptr) {
                     region = region_monitor_->update(stabilized_detections,
                                                      frame_snapshot->captured_at,
@@ -1051,6 +1065,7 @@ void verify_video_output(const VideoWriterInfo& info)
     }
 }
 
+// 正式网络路径：采集与 AI 在独立线程推进；UI 用最新帧和最近完成的检测结果合成并发布画面。
 int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                       const std::vector<std::string>& labels, TcpServer* tcp_server)
 {
@@ -1177,6 +1192,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             }
             SmoothDetectionSnapshot snapshot;
             const Clock::time_point snapshot_copy_start = Clock::now();
+            // 只对新一代 AI 结果发布一次事件；重复显示旧检测框不会重复触发 ENTER/DWELL/EXIT。
             if (worker.copy_latest(snapshot) && snapshot.generation != last_generation) {
                 completed_inferences +=
                     static_cast<std::size_t>(snapshot.generation - last_generation);
@@ -1205,6 +1221,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 std::chrono::duration<double>(display_now - display_wall_start).count();
             FrameMetrics display_metrics = latest_metrics;
             display_metrics.object_count = static_cast<double>(latest_detections.size());
+            // 显示 FPS 计显示循环次数，检测 FPS 计完成的推理次数；二者不要求相等。
             display_metrics.display_fps =
                 elapsed_s > 0.0 ? static_cast<double>(displayed_frames + 1U) / elapsed_s : 0.0;
             display_metrics.detection_fps =
@@ -1228,6 +1245,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 last_network_status = display_now;
             }
 
+            // 合成结果仍是 BGR；同一帧交给本地窗口和 RTSP 发布。
             const cv::Mat& composed = composer.compose(
                 frame, latest_detections, latest_new_events, active_roi, options.show_roi);
             latest_new_events.clear();
@@ -1315,6 +1333,7 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     const double detection_fps = elapsed_s > 0.0
                                      ? static_cast<double>(completed_inferences) / elapsed_s
                                      : 0.0;
+    // 结果年龄从 AI 完成到显示读取计算，不是相机采集到显示的总延迟。
     const double average_result_age = result_age_samples > 0U
                                           ? result_age_sum_ms /
                                                 static_cast<double>(result_age_samples)
@@ -1730,6 +1749,7 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
 
 }  // namespace
 
+// 模型对象先于检测器创建，并在所有输出批次退出作用域后销毁 RKNN context。
 int run_application(const AppOptions& options)
 {
     validate_options(options);

@@ -16,6 +16,7 @@ enum class LogicalObjectState {
     Exited,
 };
 
+// box 始终是源图像素坐标；track_id 是短期关联，logical_id 是连续存在的业务身份。
 struct Detection {
     int class_id = -1;
     float confidence = 0.0F;
@@ -30,6 +31,7 @@ struct Detection {
     bool suppress_enter = false;
 };
 
+// 保存源图到模型画布的缩放和填充参数，供检测框从模型坐标回到源图。
 struct LetterboxInfo {
     float scale = 1.0F;
     int pad_x = 0;
@@ -122,6 +124,7 @@ struct TensorMeta {
     float scale = 1.0F;
 };
 
+// 只借用 RKNN 输出字节；data 的有效期不得超过对应 RknnOutputBatch。
 struct RawTensorView {
     const void* data = nullptr;
     std::size_t size = 0;

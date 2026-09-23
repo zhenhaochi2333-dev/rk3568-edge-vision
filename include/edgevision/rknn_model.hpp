@@ -11,6 +11,7 @@
 
 namespace edgevision {
 
+// move-only 所有权对象：负责 rknn_outputs_get 得到的整批输出，析构时归还 Runtime。
 class RknnOutputBatch {
 public:
     RknnOutputBatch() = default;

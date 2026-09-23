@@ -1,3 +1,4 @@
+/* 用源图坐标中的框中心判断归一化 ROI，按 logical_id 维护 ENTER/DWELL/EXIT。 */
 #include "edgevision/region_monitor.hpp"
 
 #include <algorithm>
@@ -52,6 +53,7 @@ void RegionMonitor::append_event(const RegionEvent& event, RegionSnapshot& snaps
     }
 }
 
+// 输入来自稳定器的活动对象；返回本次新事件、当前占用数和有界的近期事件列表。
 RegionSnapshot RegionMonitor::update(
     const std::vector<Detection>& stabilized_detections,
     std::chrono::steady_clock::time_point source_timestamp,
@@ -74,6 +76,7 @@ RegionSnapshot RegionMonitor::update(
         }
         observed[logical_id] = true;
 
+        // ROI 参数在 [0,1] 坐标系；检测框必须先除以原始帧宽高，不能用 640 模型坐标。
         const float center_x = (detection.box.x + detection.box.width * 0.5F) /
                                static_cast<float>(frame_width);
         const float center_y = (detection.box.y + detection.box.height * 0.5F) /
@@ -107,6 +110,7 @@ RegionSnapshot RegionMonitor::update(
         TrackState& state = state_it->second;
         state.class_id = detection.class_id;
         state.confidence = detection.confidence;
+        // 临时漏检暂停驻留累计；重新观察到对象时继续同一次区域生命周期。
         if (state.inside && state.missing) {
             // A short absence pauses dwell instead of ending the lifecycle.
             state.missing = false;
@@ -141,6 +145,7 @@ RegionSnapshot RegionMonitor::update(
             append_event(event, snapshot);
         } else if (state.inside && !state.dwell_emitted &&
                    state.dwell_accumulated_seconds >= dwell_seconds_) {
+            // 一个区域停留周期只发一次 DWELL，离开再进入才重新允许触发。
             state.dwell_emitted = true;
             RegionEvent event{RegionEventType::Dwell, logical_id, detection.class_id,
                               source_timestamp, detection.confidence};

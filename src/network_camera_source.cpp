@@ -1,3 +1,6 @@
+/* PC 发送连续 JPEG 字节流；这里用 SOI/EOI 恢复完整图像，再交给 OpenCV 解码为 BGR。
+ * read() 的输出契约是 1280x720 CV_8UC3，供后续公共检测路径使用。
+ */
 #include "edgevision/network_camera_source.hpp"
 
 #include <opencv2/imgcodecs.hpp>
@@ -110,6 +113,8 @@ void NetworkCameraSource::open()
 #endif
 }
 
+// TCP 不保留发送端写入边界：一次 recv 可含半张、多张或跨张 JPEG。
+// stream_buffer_ 保留未闭合的尾部，仅取最近一张完整 JPEG 来控制实时延迟。
 bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
 {
     const auto find_marker = [this](std::size_t start, unsigned char first,
@@ -139,6 +144,7 @@ bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
         search_from = latest_end;
     }
 
+    // 尚未收到 EOI 时保留跨 recv 的残片；超大残片按上限尝试丢弃旧前缀。
     if (latest_end == std::string::npos) {
         if (stream_buffer_.size() > kMaximumBufferedJpegBytes) {
             const std::size_t last_start = find_marker(
@@ -154,6 +160,7 @@ bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
         return false;
     }
 
+    // 拷贝出 JPEG 后移走其前方所有字节，未完成的新帧仍留在接收缓冲区。
     jpeg.assign(stream_buffer_.begin() + static_cast<std::ptrdiff_t>(latest_start),
                 stream_buffer_.begin() + static_cast<std::ptrdiff_t>(latest_end));
     stream_buffer_.erase(stream_buffer_.begin(),
@@ -173,6 +180,7 @@ void NetworkCameraSource::close_client_locked()
     stream_buffer_.clear();
 }
 
+// 成功返回一张完整 BGR 帧；超时/断线返回 false，让外层采集线程决定重试与重连。
 bool NetworkCameraSource::read(cv::Mat& frame)
 {
     frame.release();
@@ -189,6 +197,7 @@ bool NetworkCameraSource::read(cv::Mat& frame)
 
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+            // 只有完整压缩图像才进入 imdecode，避免把 TCP 分片误作一帧。
             if (extract_latest_jpeg(jpeg)) {
                 frame = cv::imdecode(jpeg, cv::IMREAD_COLOR);
                 if (frame.empty()) {
@@ -268,6 +277,7 @@ bool NetworkCameraSource::read(cv::Mat& frame)
             return false;
         }
 
+        // recv 的长度由当前可用字节决定，与 JPEG 大小和发送次数均无一一对应关系。
         const ssize_t received = recv(client_fd, receive_buffer.data(), receive_buffer.size(), 0);
         if (received > 0) {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
@@ -288,6 +298,7 @@ bool NetworkCameraSource::read(cv::Mat& frame)
 #endif
 }
 
+// 关闭客户端和监听 fd，并设置停止标志以中断采集线程的轮询/读取。
 void NetworkCameraSource::release()
 {
     stop_requested_.store(true);

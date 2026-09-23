@@ -1,3 +1,4 @@
+/* Windows 侧订阅板端 :9000 的逐行 JSON 事件，只把业务字段写为本地 CSV。 */
 #ifdef _WIN32
 
 #include <winsock2.h>
@@ -209,6 +210,7 @@ SOCKET connect_to(const Options& options)
     return connected;
 }
 
+// status 等非事件消息不落盘；CSV 时间是 PC 接收时刻，不是板端源帧单调时钟。
 void record_event(const std::string& line, std::ofstream& output)
 {
     bool type_found = false;
@@ -274,6 +276,7 @@ int main(int argc, char** argv)
                 }
                 throw std::runtime_error("event receive failed");
             }
+            // 一次 recv 的边界与 JSON 行无关；pending 保留尚未收到换行的残片。
             pending.append(buffer, static_cast<std::size_t>(received));
             for (;;) {
                 const std::size_t newline = pending.find('\n');

@@ -1,3 +1,4 @@
+/* 检测框保持源图坐标；本模块独立计算显示裁剪/缩放，将框、ROI 和事件提示映射到画布。 */
 #include "edgevision/display_composer.hpp"
 
 #include <opencv2/imgproc.hpp>
@@ -46,6 +47,7 @@ DisplayComposer::DisplayComposer(const std::vector<std::string>& labels,
     geometry_.display_size = cv::Size(display_width_, display_height_);
 }
 
+// Fill 居中裁掉源图边缘以铺满画布；Fit 保留完整源图并留边，二者映射参数不同。
 DisplayGeometry DisplayComposer::compute_geometry(const cv::Size& source_size,
                                                   const cv::Size& display_size,
                                                   DisplayPolicy policy)
@@ -87,6 +89,7 @@ DisplayGeometry DisplayComposer::compute_geometry(const cv::Size& source_size,
     return geometry;
 }
 
+// 先与实际显示的源图裁剪区相交，再按缩放与偏移变成画布坐标。
 cv::Rect2f DisplayComposer::map_source_box(const cv::Rect2f& source_box,
                                            const DisplayGeometry& geometry)
 {
@@ -308,6 +311,7 @@ void DisplayComposer::update_and_draw_toasts(const std::vector<RegionEvent>& new
     }
 }
 
+// 返回内部 canvas_ 的引用，只在下一次 compose 前有效；调用端应立即显示或复制。
 const cv::Mat& DisplayComposer::compose(const cv::Mat& bgr,
                                         const std::vector<Detection>& detections,
                                         const std::vector<RegionEvent>& new_events,
@@ -335,6 +339,7 @@ const cv::Mat& DisplayComposer::compose(const cv::Mat& bgr,
     const Clock::time_point overlay_start = Clock::now();
     std::vector<cv::Rect> occupied_label_rects;
     occupied_label_rects.reserve(detections.size());
+    // 只排序指向本轮检测结果的指针，绘制顺序不改动调用者的检测列表。
     std::vector<const Detection*> ordered;
     ordered.reserve(detections.size());
     for (const Detection& detection : detections) {

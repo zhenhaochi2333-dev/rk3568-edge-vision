@@ -1,3 +1,6 @@
+/* raw track_id -> 连续存在的 logical_id：以源帧时间推进短时重关联、
+ * 置信度证据、类别融合与 Candidate/Active/LostPending/Exited 生命周期。
+ */
 #include "edgevision/semantic_stabilizer.hpp"
 
 #include <algorithm>
@@ -78,6 +81,7 @@ float SemanticStabilizer::center_distance(const cv::Rect2f& first,
                      (first_y - second_y) * (first_y - second_y));
 }
 
+// 短时丢失后用框位置/重叠判断是否仍为同一物体，避免 raw track_id 变化就重发事件。
 bool SemanticStabilizer::can_reassociate(
     const LogicalObject& object, const Detection& detection,
     std::chrono::steady_clock::time_point source_timestamp, float image_diagonal) const
@@ -108,6 +112,7 @@ bool SemanticStabilizer::can_reassociate(
            overlap >= config_.reassociation_iou_threshold;
 }
 
+// 历史类别证据按时间衰减，新观测按置信度累加；切换稳定类别还需优势和持续时间。
 void SemanticStabilizer::update_class_fusion(
     LogicalObject& object, const Detection& detection,
     std::chrono::steady_clock::time_point source_timestamp, double dt_seconds)
@@ -208,6 +213,7 @@ void SemanticStabilizer::evict_for_capacity()
     }
 }
 
+// 只返回本轮实际看到的 Active 对象；内部仍保存候选和短时丢失对象以维护 logical_id。
 std::vector<Detection> SemanticStabilizer::update(
     const std::vector<Detection>& tracked_detections,
     std::chrono::steady_clock::time_point source_timestamp,
@@ -274,6 +280,7 @@ std::vector<Detection> SemanticStabilizer::update(
         }
     }
 
+    // 先尝试 raw ID 直连，剩余框再用几何与时间证据匹配，每个逻辑对象最多分配一次。
     std::vector<int> assignments(detections.size(), -1);
     std::vector<bool> object_matched(objects_.size(), false);
 
@@ -348,6 +355,7 @@ std::vector<Detection> SemanticStabilizer::update(
 
     // Advance real-time presence for every live object, including objects
     // missing from this detector update.
+    // presence 按真实时间升降，而非简单帧数；检测慢或丢帧时生命周期仍随时间推进。
     std::vector<double> object_dt(objects_.size(), 0.0);
     for (std::size_t object_index = 0U; object_index < objects_.size(); ++object_index) {
         LogicalObject& object = objects_[object_index];
@@ -417,6 +425,7 @@ std::vector<Detection> SemanticStabilizer::update(
         object.has_seen = true;
         object.active_before_loss = false;
 
+        // 已激活对象从短时丢失恢复后沿用 logical_id；新候选需跨越进入门限和稳定时长。
         if (was_active) {
             // LOST_PENDING -> ACTIVE recovery never creates a second ENTER.
             object.state = LogicalObjectState::Active;
@@ -450,6 +459,7 @@ std::vector<Detection> SemanticStabilizer::update(
         output.logical_id = object.logical_id;
         output.presence_score = object.presence_score;
         output.lifecycle_state = LogicalObjectState::Active;
+        // 启动阶段已有的稳定对象仍可显示；ROI 据此跳过它的首次 ENTER。
         output.suppress_enter = object.bootstrap_baseline;
         stabilized.push_back(output);
     }

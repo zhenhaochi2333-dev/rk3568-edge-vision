@@ -1,3 +1,6 @@
+/* 已标注 BGR 帧 -> GStreamer appsrc -> NV12 -> Rockchip MPP H.264 -> RTP/RTSP。
+ * 此输出链与输入侧的 JPEG/TCP 是两个独立协议和编码方向。
+ */
 #include "edgevision/rtsp_streamer.hpp"
 #include "edgevision/logger.hpp"
 
@@ -44,6 +47,7 @@ RtspStreamer::~RtspStreamer()
     stop();
 }
 
+// appsrc 接受 1280x720 BGR；videoconvert 交付 NV12，再由 mpph264enc 编码。
 std::string RtspStreamer::make_pipeline()
 {
     return "( appsrc name=src is-live=true format=time do-timestamp=false "
@@ -114,6 +118,7 @@ bool RtspStreamer::is_running() const
     return running_;
 }
 
+// 从调用者 Mat 复制一帧到自有 GstBuffer；替换旧帧后 RTSP 客户端读取不依赖 Mat 寿命。
 void RtspStreamer::publish(const cv::Mat& annotated_bgr)
 {
     if (annotated_bgr.empty() || annotated_bgr.cols != kWidth ||
@@ -199,6 +204,7 @@ void RtspStreamer::on_need_data(_GstAppSrc* appsrc, unsigned int, void* user_dat
     static_cast<RtspStreamer*>(user_data)->push_latest(appsrc);
 }
 
+// need-data 回调复制当前最新缓冲，并按 15 FPS 固定步长标记 PTS/DTS。
 void RtspStreamer::push_latest(_GstAppSrc* appsrc)
 {
     GstBuffer* buffer = nullptr;
@@ -216,6 +222,7 @@ void RtspStreamer::push_latest(_GstAppSrc* appsrc)
     if (buffer == nullptr) {
         return;
     }
+    // 时间戳属于推送给 appsrc 的副本；gst_app_src_push_buffer 接管该副本所有权。
     GST_BUFFER_PTS(buffer) = pts;
     GST_BUFFER_DTS(buffer) = pts;
     GST_BUFFER_DURATION(buffer) = frame_duration();
@@ -226,6 +233,7 @@ void RtspStreamer::push_latest(_GstAppSrc* appsrc)
     }
 }
 
+// GLib 主循环在服务线程处理 RTSP 会话；停止时退出循环并释放 GStreamer 引用。
 void RtspStreamer::run_server()
 {
     GMainContext* context = nullptr;

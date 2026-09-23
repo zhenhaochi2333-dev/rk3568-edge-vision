@@ -1,3 +1,6 @@
+/* RKNN 资源边界：模型文件初始化 context，运行时查询真实 tensor 属性，
+ * 每次推理的输出由 RknnOutputBatch 归还给同一个 context。
+ */
 #include "edgevision/rknn_model.hpp"
 
 #include "edgevision/logger.hpp"
@@ -17,6 +20,7 @@ RknnOutputBatch::RknnOutputBatch(rknn_context context, std::vector<rknn_output> 
 {
 }
 
+// 输出缓冲区由 RKNN Runtime 分配；作用域结束时必须先 release，模型 context 才能销毁。
 RknnOutputBatch::~RknnOutputBatch()
 {
     release();
@@ -55,6 +59,7 @@ void RknnOutputBatch::release() noexcept
     outputs_.clear();
 }
 
+// 临时 vector 向 rknn_init 提供模型字节；初始化后通过 context 与 Runtime 交互。
 RknnModel::RknnModel(const std::string& model_path)
 {
     std::ifstream file(model_path.c_str(), std::ios::binary | std::ios::ate);
@@ -126,6 +131,7 @@ std::string RknnModel::describe(const TensorMeta& meta)
     return stream.str();
 }
 
+// 运行时查询输入/输出的 shape、layout、dtype 与量化参数，避免把模型转换结果写死。
 void RknnModel::query_metadata()
 {
     rknn_input_output_num io_num{};
@@ -163,6 +169,7 @@ void RknnModel::query_metadata()
         log_info("output tensor " + describe(output_metas_.back()));
     }
 
+    // 当前检测路径只支持 batch=1、3 通道 NHWC RGB；宽高从模型属性取得。
     const TensorMeta& input = input_metas_.front();
     if (input.format != static_cast<int>(RKNN_TENSOR_NHWC) || input.dims.size() != 4U ||
         input.dims[0] != 1U || input.dims[3] != 3U) {
@@ -179,6 +186,7 @@ void RknnModel::query_metadata()
     }
 }
 
+// 输入指针借用调用者的 RGB NHWC 缓冲区；返回值负责 RKNN 输出的释放。
 RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input_size,
                                double* inference_ms)
 {
@@ -194,6 +202,7 @@ RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input
     input.index = 0;
     input.buf = const_cast<std::uint8_t*>(input_data);
     input.size = static_cast<std::uint32_t>(input_size);
+    // 非 pass-through：由 Runtime 按声明的 UINT8/NHWC 输入处理模型所需转换。
     input.pass_through = 0;
     input.type = RKNN_TENSOR_UINT8;
     input.fmt = RKNN_TENSOR_NHWC;
@@ -202,6 +211,7 @@ RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input
     if (ret != RKNN_SUCC) {
         throw std::runtime_error("rknn_inputs_set failed with ret=" + std::to_string(ret));
     }
+    // inference_ms 仅包围 rknn_run，不包含预处理、输入设置、输出获取或 CPU 解码。
     const auto inference_start = std::chrono::steady_clock::now();
     ret = rknn_run(context_, nullptr);
     const auto inference_end = std::chrono::steady_clock::now();
@@ -212,6 +222,7 @@ RknnOutputBatch RknnModel::run(const std::uint8_t* input_data, std::size_t input
         throw std::runtime_error("rknn_run failed with ret=" + std::to_string(ret));
     }
 
+    // 量化输出保留原始整数，以 metadata 的 zero_point/scale 在 CPU 解码时反量化。
     std::vector<rknn_output> outputs(output_metas_.size());
     for (std::size_t index = 0; index < outputs.size(); ++index) {
         outputs[index].index = static_cast<std::uint32_t>(index);

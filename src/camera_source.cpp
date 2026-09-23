@@ -1,3 +1,6 @@
+/* 可选板载 V4L2 路径：1280x720 NV12 单平面 MMAP -> 去 stride 拷贝 -> OpenCV BGR。
+ * 与正式演示的 PC JPEG/TCP 输入不同，但提供相同的 BGR 帧契约。
+ */
 #include "edgevision/camera_source.hpp"
 
 #include <opencv2/imgproc.hpp>
@@ -64,6 +67,7 @@ std::string CameraSource::make_pipeline(const std::string& device)
            " api=VIDEO_CAPTURE_MPLANE format=NV12 width=1280 height=720 buffers=4";
 }
 
+// 协商多平面采集 API 中的单个 NV12 内存平面，并把驱动缓冲区映射到进程地址空间。
 void CameraSource::open()
 {
 #ifndef __linux__
@@ -111,6 +115,7 @@ void CameraSource::open()
         if (plane_count_ != 1U) {
             throw std::runtime_error("camera NV12 format is not single-plane");
         }
+        // stride 可大于可见宽度；Y 与交错 UV 行均按 stride 存放。
         bytes_per_line_ = format.fmt.pix_mp.plane_fmt[0].bytesperline;
         if (bytes_per_line_ < kCameraWidth) {
             throw std::runtime_error("camera NV12 stride is smaller than image width");
@@ -162,6 +167,7 @@ void CameraSource::open()
             }
             buffers_[index] = std::move(mapped);
         }
+        // 将所有 MMAP buffer 先交回驱动，STREAMON 后才能循环 DQBUF/QBUF。
         for (std::uint32_t index = 0U; index < buffers_.size(); ++index) {
             queue_buffer(index);
         }
@@ -188,6 +194,7 @@ void CameraSource::open()
 #endif
 }
 
+// DQBUF 借用一块驱动内存；拷贝可见 NV12 字节并转 BGR 后立即 QBUF 归还。
 bool CameraSource::read(cv::Mat& frame)
 {
     frame.release();
@@ -213,6 +220,7 @@ bool CameraSource::read(cv::Mat& frame)
             throw std::runtime_error("camera returned an incomplete NV12 frame");
         }
         const auto* source = static_cast<const std::uint8_t*>(buffers_[index].addresses[0]);
+        // 去掉每行硬件 padding，形成 OpenCV 期望的紧凑 720*3/2 行 NV12 Mat。
         for (std::uint32_t row = 0U; row < kCameraHeight * 3U / 2U; ++row) {
             std::memcpy(nv12_buffer_.ptr(static_cast<int>(row)),
                         source + static_cast<std::size_t>(row) * bytes_per_line_, kCameraWidth);
@@ -230,6 +238,7 @@ bool CameraSource::read(cv::Mat& frame)
 #endif
 }
 
+// 先停视频流，再解除映射、释放驱动队列和 fd；析构时也走相同路径。
 void CameraSource::release()
 {
 #ifdef __linux__

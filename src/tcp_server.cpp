@@ -1,3 +1,6 @@
+/* 独立 POSIX TCP 服务：换行命令请求状态或订阅事件；响应是逐行 JSON。
+ * 它与传 JPEG 的 :5600 输入 socket 分离，默认监听 :9000。
+ */
 #include "edgevision/tcp_server.hpp"
 
 #include <chrono>
@@ -126,6 +129,7 @@ void TcpServer::update_status(const TcpStatusSnapshot& status)
     status_ = status;
 }
 
+// AI/显示线程只把已订阅事件放进有界队列；socket 写入由服务线程完成。
 void TcpServer::publish_event(const RegionEvent& event, const std::string& class_name)
 {
     if (!subscribed_.load()) {
@@ -207,6 +211,7 @@ void TcpServer::close_client()
     event_queue_.clear();
 }
 
+// TCP 也是字节流；一个 recv 可能只含半条命令或多条命令，因此按换行拆包。
 void TcpServer::receive_client_data()
 {
     char buffer[4096]{};
@@ -268,6 +273,7 @@ void TcpServer::handle_command(const std::string& command)
     }
 }
 
+// 把事件队列转换为业务 JSON；兼容字段 track_id 当前承载同一个 logical_id。
 void TcpServer::flush_events()
 {
     if (!subscribed_.load()) {
@@ -304,6 +310,7 @@ void TcpServer::flush_events()
     }
 }
 
+// send 可能只写入部分字节；offset 循环尝试发完一行，失败则返回 false。
 bool TcpServer::send_line(const std::string& line)
 {
     if (client_fd_ < 0) {
@@ -340,6 +347,7 @@ bool TcpServer::send_status()
         status = status_;
     }
     std::ostringstream message;
+    // uptime 使用单调时钟计时；它不是 Unix 墙上时间戳。
     const auto uptime_ms = started_at_ == std::chrono::steady_clock::time_point{}
                                ? 0LL
                                : std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -1,3 +1,4 @@
+/* 轻量逐帧 IoU 关联产生短期 track_id；业务上的连续存在身份由后续稳定器维护。 */
 #include "edgevision/iou_tracker.hpp"
 
 #include <algorithm>
@@ -40,6 +41,7 @@ float IouTracker::intersection_over_union(const cv::Rect2f& first,
     return union_area > 0.0F ? intersection / union_area : 0.0F;
 }
 
+// 每条旧轨迹选同类别且 IoU 达阈值的未匹配框；漏检轨迹暂存但本轮不输出。
 std::vector<Detection> IouTracker::update(const std::vector<Detection>& detections)
 {
     std::vector<bool> matched(detections.size(), false);
@@ -69,6 +71,7 @@ std::vector<Detection> IouTracker::update(const std::vector<Detection>& detectio
         }
     }
 
+    // 连续漏检超过上限才删轨迹；新框之后获得新的 raw track_id。
     tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
                                  [this](const Track& track) {
                                      return track.missed > config_.max_missed;

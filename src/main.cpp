@@ -1,3 +1,4 @@
+// 入口只负责命令行解析和顶层异常边界；模型与数据流由 run_application 管理。
 #include "edgevision/application.hpp"
 #include "edgevision/cli_parser.hpp"
 #include "edgevision/logger.hpp"

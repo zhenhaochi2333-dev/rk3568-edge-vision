@@ -1,3 +1,6 @@
+/* YOLO11s RKNN 后处理：三个 stride 的九个输出 -> DFL 距离 -> 候选框
+ * -> 置信度过滤与 NMS -> 源图坐标。这里处理的是 YOLO11，不使用旧 YOLOv5 锚框。
+ */
 #include "edgevision/yolo11_detector.hpp"
 
 #include "rknn_api.h"
@@ -90,6 +93,7 @@ TensorShape tensor_shape(const TensorMeta& meta)
     return shape;
 }
 
+// 同一逻辑元素在 NCHW 与 NHWC 中有不同线性偏移；按查询到的 layout 访问原始输出。
 std::size_t value_index(const TensorMeta& meta, const TensorShape& shape,
                         int channel, int row, int column)
 {
@@ -107,6 +111,7 @@ std::size_t value_index(const TensorMeta& meta, const TensorShape& shape,
            static_cast<std::size_t>(channel);
 }
 
+// 量化张量按 (整数值 - zero_point) * scale 还原浮点值；float 输出直接读取。
 float scalar_value(const RawTensorView& view, std::size_t index)
 {
     const std::size_t bytes = (index + 1U) * scalar_size(view.meta);
@@ -141,6 +146,7 @@ float iou(const Candidate& lhs, const Candidate& rhs)
     return union_area <= 0.0F ? 0.0F : intersection / union_area;
 }
 
+// 分数从高到低保留候选框；同类重叠框和几何几乎相同的跨类重复框被抑制。
 std::vector<Candidate> classwise_nms(std::vector<Candidate> candidates, float threshold)
 {
     std::vector<int> order(candidates.size());
@@ -190,6 +196,7 @@ std::vector<Candidate> classwise_nms(std::vector<Candidate> candidates, float th
     return kept;
 }
 
+// 每条边的 16 个分布 bin 经 softmax 求期望，得到网格中心到四边的距离。
 void compute_dfl(const RawTensorView& view, const TensorShape& shape, int row, int column,
                  int dfl_len, std::array<float, 4>& box)
 {
@@ -213,6 +220,7 @@ void compute_dfl(const RawTensorView& view, const TensorShape& shape, int row, i
     }
 }
 
+// 每尺度按 [64 通道框分布, 80 类分数, 1 通道分数和] 分组，并验证 stride 8/16/32。
 std::vector<Head> describe_heads(const std::vector<RawTensorView>& outputs,
                                  int model_width, int model_height)
 {
@@ -283,6 +291,7 @@ std::vector<Detection> Yolo11Detector::detect(const cv::Mat& bgr)
     return detect_with_metrics(bgr).detections;
 }
 
+// CPU 完成 OpenCV 预处理和后处理；rknn_run 执行模型推理，输出批次仅在本函数内有效。
 DetectionResult Yolo11Detector::detect_with_metrics(const cv::Mat& bgr)
 {
     DetectionResult result;
@@ -296,6 +305,7 @@ DetectionResult Yolo11Detector::detect_with_metrics(const cv::Mat& bgr)
                                               &result.metrics.inference_ms);
     const std::vector<TensorMeta>& metas = model_.output_metas();
     const std::vector<rknn_output>& outputs = output_batch.outputs();
+    // RawTensorView 不拥有 buf；必须在 output_batch 析构、释放 RKNN 输出之前完成解码。
     std::vector<RawTensorView> views;
     views.reserve(outputs.size());
     for (std::size_t index = 0; index < outputs.size(); ++index) {
@@ -314,6 +324,7 @@ DetectionResult Yolo11Detector::detect_with_metrics(const cv::Mat& bgr)
     return result;
 }
 
+// score_sum 先跳过低分网格，再取最强类别；DFL 距离乘 stride 后得到模型输入坐标。
 std::vector<Detection> Yolo11Detector::decode_raw(const std::vector<RawTensorView>& outputs,
                                                   const LetterboxInfo& letterbox,
                                                   int model_width, int model_height,
@@ -368,6 +379,7 @@ std::vector<Detection> Yolo11Detector::decode_raw(const std::vector<RawTensorVie
         }
     }
 
+    // 诊断计数分别记录 NMS 前候选数和被抑制数；最终输出还限制最多 128 个框。
     const std::size_t candidates_before_nms = candidates.size();
     const std::vector<Candidate> kept = classwise_nms(std::move(candidates), nms_threshold);
     if (candidate_count != nullptr) {
