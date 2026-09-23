@@ -27,6 +27,7 @@ constexpr int kBitrate = 6000000;
 
 GstClockTime frame_duration()
 {
+    // 用 GStreamer 时钟刻度表示 1/15 秒，PTS 在单一媒体时间轴上按该间隔递增。
     return gst_util_uint64_scale_int(GST_SECOND, 1, kFps);
 }
 
@@ -50,6 +51,8 @@ RtspStreamer::~RtspStreamer()
 // appsrc 接受 1280x720 BGR；videoconvert 交付 NV12，再由 mpph264enc 编码。
 std::string RtspStreamer::make_pipeline()
 {
+    // appsrc 输入紧凑 BGR；videoconvert 转成硬件编码器需要的 NV12，
+    // MPP 输出 H.264，解析器和 payloader 再生成 RTSP/RTP 传输所需的负载。
     return "( appsrc name=src is-live=true format=time do-timestamp=false "
            "block=false max-bytes=2764800 "
            "caps=\"video/x-raw,format=BGR,width=1280,height=720,framerate=15/1\" "
@@ -64,6 +67,7 @@ void RtspStreamer::start()
     if (running_) {
         return;
     }
+    // 上次线程即使已退出，仍需 join 才能回收 thread 对象后重新赋值。
     if (server_thread_.joinable()) {
         lock.unlock();
         server_thread_.join();
@@ -84,6 +88,7 @@ void RtspStreamer::start()
     // initialization.
     gst_init(nullptr, nullptr);
     server_thread_ = std::thread(&RtspStreamer::run_server, this);
+    // 同步等到工作线程报告初始化结果，避免调用方在服务未就绪时开始推帧。
     condition_.wait(lock, [this] { return ready_ || failed_; });
     if (failed_) {
         const std::string message = error_message_;
@@ -103,6 +108,7 @@ void RtspStreamer::stop()
         stop_requested_ = true;
         loop = loop_;
     }
+    // 在锁内取得指针快照，锁外通知 GLib 退出，避免持锁等待服务线程清理。
     if (loop != nullptr) {
         g_main_loop_quit(reinterpret_cast<GMainLoop*>(loop));
     }
@@ -126,6 +132,8 @@ void RtspStreamer::publish(const cv::Mat& annotated_bgr)
         throw std::runtime_error("RTSP frame must be 1280x720 BGR CV_8UC3");
     }
 
+    // 分配 GStreamer 自有存储，不能仅包装 annotated_bgr.data，因为调用者返回后
+    // 可能立刻复用或销毁 Mat；复制使 appsrc 的缓冲寿命与输入 Mat 分离。
     GstBuffer* buffer = gst_buffer_new_allocate(nullptr,
                                                  annotated_bgr.total() * annotated_bgr.elemSize(),
                                                  nullptr);
@@ -138,10 +146,13 @@ void RtspStreamer::publish(const cv::Mat& annotated_bgr)
         gst_buffer_unref(buffer);
         throw std::runtime_error("cannot map RTSP frame buffer");
     }
+    // 当前生产调用方交付连续 BGR canvas；此处按 total*elemSize 一次复制。
+    // publish 未检查 Mat::isContinuous，带行 stride 的 ROI Mat 不满足这一隐含前提。
     std::memcpy(map.data, annotated_bgr.data, map.size);
     gst_buffer_unmap(buffer, &map);
 
     std::lock_guard<std::mutex> lock(mutex_);
+    // 成员持有当前帧的一份引用；替换时释放旧引用，但已被回调复制的帧仍独立有效。
     if (latest_buffer_ != nullptr) {
         gst_buffer_unref(reinterpret_cast<GstBuffer*>(latest_buffer_));
     }
@@ -162,6 +173,7 @@ void RtspStreamer::configure_media(_GstRTSPMedia* media)
     // Keep the appsrc/MPP encoder alive when a client disappears.  This is
     // required for a subsequent client to reuse the same prepared media
     // instead of trying to re-preroll the Rockchip encoder from scratch.
+    // 客户端断开后复用媒体对象，避免重建硬件编码器造成重连预热失败。
     gst_rtsp_media_set_reusable(rtsp_media, TRUE);
     gst_rtsp_media_set_stop_on_disconnect(rtsp_media, FALSE);
     gst_rtsp_media_set_suspend_mode(rtsp_media, GST_RTSP_SUSPEND_MODE_NONE);
@@ -180,6 +192,7 @@ void RtspStreamer::configure_media(_GstRTSPMedia* media)
         return;
     }
 
+    // 回调把 user_data 指向当前实例；该实例在 stop() join 服务线程前一直存活。
     GstAppSrcCallbacks callbacks{};
     callbacks.need_data = &RtspStreamer::on_need_data;
     gst_app_src_set_callbacks(GST_APP_SRC(appsrc), &callbacks, this, nullptr);
@@ -214,8 +227,11 @@ void RtspStreamer::push_latest(_GstAppSrc* appsrc)
         if (latest_buffer_ == nullptr || stop_requested_) {
             return;
         }
+        // 在互斥区复制 GstBuffer 及其数据引用，之后即使 publish 替换最新帧，
+        // 本次推送仍有独立引用；GStreamer 可共享底层数据，避免重复整帧 memcpy。
         buffer = gst_buffer_copy(reinterpret_cast<GstBuffer*>(latest_buffer_));
         pts = next_pts_;
+        // 时间戳按实际被请求并推送的帧增长；没有请求时不会凭空补齐漏掉的帧。
         next_pts_ += frame_duration();
     }
 
@@ -226,6 +242,7 @@ void RtspStreamer::push_latest(_GstAppSrc* appsrc)
     GST_BUFFER_PTS(buffer) = pts;
     GST_BUFFER_DTS(buffer) = pts;
     GST_BUFFER_DURATION(buffer) = frame_duration();
+    // gst_app_src_push_buffer 接管 buffer 所有权；返回后本函数不再释放或访问它。
     const GstFlowReturn result =
         gst_app_src_push_buffer(reinterpret_cast<GstAppSrc*>(appsrc), buffer);
     if (result != GST_FLOW_OK && result != GST_FLOW_FLUSHING) {
@@ -236,6 +253,7 @@ void RtspStreamer::push_latest(_GstAppSrc* appsrc)
 // GLib 主循环在服务线程处理 RTSP 会话；停止时退出循环并释放 GStreamer 引用。
 void RtspStreamer::run_server()
 {
+    // GLib、RTSP server 和 factory 在该线程创建、驱动并释放；其他线程只经 mutex_ 访问状态。
     GMainContext* context = nullptr;
     GMainLoop* loop = nullptr;
     GstRTSPServer* server = nullptr;
@@ -271,6 +289,7 @@ void RtspStreamer::run_server()
         g_object_unref(mounts);
         factory = nullptr;
 
+        // attach 把监听 socket 注册到专用 context；只有运行对应 loop 才会处理连接事件。
         source_id = gst_rtsp_server_attach(server, context);
         g_main_context_unref(context);
         context = nullptr;
@@ -294,6 +313,7 @@ void RtspStreamer::run_server()
         condition_.notify_all();
     }
 
+    // 先移除挂载的监听源，再释放 server/loop，确保清理期间没有新回调访问这些对象。
     if (source_id != 0U) {
         g_source_remove(source_id);
     }

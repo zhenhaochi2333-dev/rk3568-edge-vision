@@ -43,6 +43,7 @@ struct Options {
     std::string output = "event_log.csv";
 };
 
+// 端口只接受十进制 1..65535；strtol 的 end 检查可拒绝空值、尾随字符和溢出范围值。
 int parse_port(const std::string& text)
 {
     char* end = nullptr;
@@ -75,6 +76,9 @@ Options parse_options(int argc, char** argv)
     return options;
 }
 
+// 轻量读取服务端当前协议中的字符串字段，支持常见反斜线转义的“去反斜线”处理。
+// 这不是完整 JSON 解析器：它依赖固定事件消息形状，不处理嵌套对象、Unicode 转义解码，
+// 也不区分字符串内容中恰好出现的同名字段；协议扩展时应换成正式 JSON 库。
 std::string json_string(const std::string& line, const std::string& key, bool& found)
 {
     const std::string marker = "\"" + key + "\"";
@@ -104,6 +108,8 @@ std::string json_string(const std::string& line, const std::string& key, bool& f
     throw std::runtime_error("unterminated JSON string field: " + key);
 }
 
+// 读取十进制整数（含可选负号）；缺少键时以 found=false 区分默认值 -1。
+// stoi 对过大整数会抛异常，由本行的事件解析捕获并报告。
 int json_integer(const std::string& line, const std::string& key, bool& found)
 {
     const std::string marker = "\"" + key + "\"";
@@ -132,6 +138,8 @@ int json_integer(const std::string& line, const std::string& key, bool& found)
     return std::stoi(line.substr(begin, end - begin));
 }
 
+// RFC 风格 CSV 字段转义：包含逗号、引号或换行时整个字段加双引号，字段内引号加倍。
+// 时间戳和数字字段由调用处单独输出；字符串类名和事件名经过此函数。
 std::string csv_field(const std::string& value)
 {
     if (value.find_first_of(",\"\r\n") == std::string::npos) {
@@ -148,6 +156,8 @@ std::string csv_field(const std::string& value)
     return escaped;
 }
 
+// 记录 PC 本地墙钟接收时间到毫秒。它用于人工对照日志，不是板端事件发生时间，
+// 也不适合计算跨设备延迟：两端时钟未同步，而且数据还经历网络与缓冲。
 std::string local_timestamp()
 {
     const auto now = std::chrono::system_clock::now();
@@ -162,6 +172,8 @@ std::string local_timestamp()
     return output.str();
 }
 
+// TCP send 允许短写；循环推进偏移直到订阅命令的全部字节写入，
+// 这里发送以换行结尾的 ASCII 命令，换行是服务端命令解析的帧终止符。
 void send_all(SOCKET socket, const std::string& message)
 {
     std::size_t offset = 0U;
@@ -175,6 +187,8 @@ void send_all(SOCKET socket, const std::string& message)
     }
 }
 
+// 先解析 IPv4/IPv6 候选地址并依次连接；getaddrinfo 返回的列表必须在成功或失败前释放。
+// 接收超时只让 recv 周期性返回，以便检查 Ctrl+C；它不是连接/事件的重试策略。
 SOCKET connect_to(const Options& options)
 {
     addrinfo hints{};
@@ -228,6 +242,8 @@ void record_event(const std::string& line, std::ofstream& output)
         (event != "ENTER" && event != "DWELL" && event != "EXIT")) {
         throw std::runtime_error("event JSON is missing required business fields");
     }
+    // 每个有效事件立即 flush，降低进程异常退出时丢失最近记录的窗口；代价是每条事件
+    // 都触发流刷新。CSV 记录与控制台显示分别取本地时钟，二者毫秒值可能略有不同。
     output << local_timestamp() << ',' << csv_field(event) << ',' << logical_id << ','
            << csv_field(class_name) << '\n';
     output.flush();
@@ -250,6 +266,8 @@ int main(int argc, char** argv)
         if (!SetConsoleCtrlHandler(console_handler, TRUE)) {
             throw std::runtime_error("cannot install console handler");
         }
+        // 以 trunc 打开意味着本次运行会重新建立日志文件，而非向旧 CSV 追加；
+        // 标题行固定对应 record_event 的四列输出。
         std::ofstream output(options.output, std::ios::trunc);
         if (!output.is_open()) {
             throw std::runtime_error("cannot open output CSV: " + options.output);
@@ -261,6 +279,8 @@ int main(int argc, char** argv)
         std::cout << "Subscribed to " << options.host << ':' << options.port
                   << ", writing " << options.output << "\n";
 
+        // TCP 是字节流：一次 recv 可能只有半行，也可能合并多行。pending 跨 recv 保留
+        // 尾部残片，直到 LF 才交给解析器；内存没有长度上限，异常超长且永不换行的数据会累积。
         std::string pending;
         char buffer[4096]{};
         while (!stop_requested.load()) {
@@ -278,6 +298,8 @@ int main(int argc, char** argv)
             }
             // 一次 recv 的边界与 JSON 行无关；pending 保留尚未收到换行的残片。
             pending.append(buffer, static_cast<std::size_t>(received));
+            // 一次读取可能含多条完整 JSON 行，所以反复消费 LF；最后不足一行的尾部
+            // 留在 pending，等下一次 recv 拼接。连接断开时未完成的尾行会被丢弃。
             for (;;) {
                 const std::size_t newline = pending.find('\n');
                 if (newline == std::string::npos) {
@@ -288,6 +310,7 @@ int main(int argc, char** argv)
                 if (line.empty()) {
                     continue;
                 }
+                // 单条格式错误只记录诊断并继续处理后续行；网络读取错误则离开外层循环。
                 try {
                     record_event(line, output);
                 } catch (const std::exception& error) {

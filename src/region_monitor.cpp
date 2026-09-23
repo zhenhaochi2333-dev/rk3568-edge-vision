@@ -11,6 +11,7 @@ namespace {
 double elapsed_seconds(std::chrono::steady_clock::time_point now,
                        std::chrono::steady_clock::time_point before)
 {
+    // 源帧时间异常倒退时不产生负驻留；正常运行依赖调用方按时间顺序传入帧。
     return std::max(0.0, std::chrono::duration<double>(now - before).count());
 }
 
@@ -23,10 +24,13 @@ RegionMonitor::RegionMonitor(NormalizedRoi roi, double dwell_seconds,
       max_recent_events_(max_recent_events),
       max_lost_seconds_(max_lost_seconds)
 {
+    // 归一化矩形必须有正面积且完整落在图像范围内；边恰好到 1.0 是有效配置。
     if (roi_.x < 0.0F || roi_.y < 0.0F || roi_.width <= 0.0F || roi_.height <= 0.0F ||
         roi_.x + roi_.width > 1.0F || roi_.y + roi_.height > 1.0F) {
         throw std::runtime_error("ROI must be inside normalized [0,1] coordinates");
     }
+    // dwell=0 合法；进入分支在本帧直接 continue，因此首次创建状态时不会发 DWELL，后续一次在内观测才触发。
+    // 队列容量为零则无有效快照历史。
     if (dwell_seconds_ < 0.0 || max_recent_events_ == 0U || max_lost_seconds_ <= 0.0) {
         throw std::runtime_error("invalid RegionMonitor configuration");
     }
@@ -34,18 +38,21 @@ RegionMonitor::RegionMonitor(NormalizedRoi roi, double dwell_seconds,
 
 bool RegionMonitor::contains(const NormalizedRoi& roi, float normalized_x, float normalized_y)
 {
+    // 四条边都包含：恰落在 ROI 边缘的中心属于区域内。
     return normalized_x >= roi.x && normalized_x <= roi.x + roi.width &&
            normalized_y >= roi.y && normalized_y <= roi.y + roi.height;
 }
 
 void RegionMonitor::reset()
 {
+    // 重置监控会清掉所有已进入身份，后续再次观察在区内会被视为首次 ENTER。
     states_.clear();
     recent_events_.clear();
 }
 
 void RegionMonitor::append_event(const RegionEvent& event, RegionSnapshot& snapshot)
 {
+    // 同一事件同时进入本轮增量列表和有界历史队列；历史满时丢弃最早事件。
     snapshot.new_events.push_back(event);
     recent_events_.push_back(event);
     while (recent_events_.size() > max_recent_events_) {
@@ -63,6 +70,7 @@ RegionSnapshot RegionMonitor::update(
         throw std::runtime_error("RegionMonitor requires positive frame dimensions");
     }
 
+    // observed 记录本轮出现过的逻辑身份（即便它在 ROI 外），用来区别“离开 ROI”和“完全漏检”。
     RegionSnapshot snapshot;
     std::map<int, bool> observed;
     for (const Detection& detection : stabilized_detections) {
@@ -70,6 +78,7 @@ RegionSnapshot RegionMonitor::update(
             detection.lifecycle_state != LogicalObjectState::Active) {
             continue;
         }
+        // 稳定 ID 优先；旧调用方没有 logical_id 时才回退到 raw track_id。
         const int logical_id = detection.logical_id >= 0 ? detection.logical_id : detection.track_id;
         if (logical_id < 0) {
             continue;
@@ -82,6 +91,7 @@ RegionSnapshot RegionMonitor::update(
         const float center_y = (detection.box.y + detection.box.height * 0.5F) /
                                static_cast<float>(frame_height);
         const bool inside = contains(roi_, center_x, center_y);
+        // occupancy 是瞬时观测值，不包括缺席中的保留状态，也不等同于状态表大小。
         if (inside) {
             ++snapshot.occupancy;
         }
@@ -95,6 +105,7 @@ RegionSnapshot RegionMonitor::update(
             state.last_observed_at = source_timestamp;
             state.missing = false;
             if (inside) {
+                // 首次被监控看见且中心已在 ROI 内，相当于从区外进入；基线静音仅阻止此 ENTER。
                 state.entered_at = source_timestamp;
                 if (!detection.suppress_enter) {
                     RegionEvent event{RegionEventType::Enter, logical_id, detection.class_id,
@@ -112,7 +123,7 @@ RegionSnapshot RegionMonitor::update(
         state.confidence = detection.confidence;
         // 临时漏检暂停驻留累计；重新观察到对象时继续同一次区域生命周期。
         if (state.inside && state.missing) {
-            // A short absence pauses dwell instead of ending the lifecycle.
+            // 短暂缺席只暂停驻留累计，不结束本次 ROI 生命周期；恢复帧从当前时刻重新作为累计锚点。
             state.missing = false;
             state.last_observed_at = source_timestamp;
         } else if (state.inside && inside) {
@@ -121,6 +132,7 @@ RegionSnapshot RegionMonitor::update(
             state.last_observed_at = source_timestamp;
         }
 
+        // 下面根据上次生命周期状态与本帧中心位置转移；先前的缺席恢复逻辑已处理驻留间隔。
         if (!state.inside && inside) {
             state.inside = true;
             state.dwell_emitted = false;
@@ -133,6 +145,7 @@ RegionSnapshot RegionMonitor::update(
             event.logical_id = logical_id;
             append_event(event, snapshot);
         } else if (state.inside && !inside) {
+            // 明确观察到中心在外，立即 EXIT；这与对象完全消失后的超时 EXIT 是两条不同路径。
             state.inside = false;
             state.dwell_emitted = false;
             state.entered_at = std::chrono::steady_clock::time_point{};
@@ -145,6 +158,7 @@ RegionSnapshot RegionMonitor::update(
             append_event(event, snapshot);
         } else if (state.inside && !state.dwell_emitted &&
                    state.dwell_accumulated_seconds >= dwell_seconds_) {
+            // 只有本轮仍确认在内才检查阈值；缺席时不会借经过的墙钟时间触发 DWELL。
             // 一个区域停留周期只发一次 DWELL，离开再进入才重新允许触发。
             state.dwell_emitted = true;
             RegionEvent event{RegionEventType::Dwell, logical_id, detection.class_id,
@@ -154,9 +168,8 @@ RegionSnapshot RegionMonitor::update(
         }
     }
 
-    // Missing objects are not counted in occupancy. They remain in the ROI
-    // lifecycle until the real-time loss window expires, then produce one
-    // delayed EXIT and are forgotten so a future logical id can enter cleanly.
+    // 完全未观测的对象不计入占用数，但仍保留原 ROI 状态直到缺失窗口届满；届满发一次延迟 EXIT，
+    // 随即删除状态，避免同一旧身份之后重新出现时继承已经结束的区域停留周期。
     for (auto state_it = states_.begin(); state_it != states_.end();) {
         TrackState& state = state_it->second;
         if (observed.find(state_it->first) != observed.end() || !state.inside) {
@@ -164,6 +177,7 @@ RegionSnapshot RegionMonitor::update(
             continue;
         }
         state.missing = true;
+        // 到达超时边界（elapsed >= max_lost_seconds）时发一次延迟 EXIT 并删除；未进入状态无事件。
         if (elapsed_seconds(source_timestamp, state.last_observed_at) < max_lost_seconds_) {
             ++state_it;
             continue;

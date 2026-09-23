@@ -14,12 +14,14 @@ namespace {
 
 float clamp_unit(float value)
 {
+    // presence 和置信度运算统一夹在概率尺度内，避免累积超出 [0,1]。
     return std::max(0.0F, std::min(1.0F, value));
 }
 
 double elapsed_seconds(std::chrono::steady_clock::time_point now,
                        std::chrono::steady_clock::time_point before)
 {
+    // 所有生命周期计时采用输入图像的单调源时间；倒序时间按零间隔处理，避免负 dt 反向加分。
     return std::max(0.0, std::chrono::duration<double>(now - before).count());
 }
 
@@ -28,6 +30,7 @@ double elapsed_seconds(std::chrono::steady_clock::time_point now,
 SemanticStabilizer::SemanticStabilizer(SemanticStabilizerConfig config)
     : config_(config)
 {
+    // 构造时一次性校验配置，使后续除法、阈值比较和幂运算都具有定义良好的边界。
     if (config_.reassociation_window_seconds <= 0.0 ||
         config_.max_lost_time_seconds < config_.reassociation_window_seconds ||
         config_.reassociation_center_distance_ratio <= 0.0F ||
@@ -48,6 +51,7 @@ SemanticStabilizer::SemanticStabilizer(SemanticStabilizerConfig config)
 
 void SemanticStabilizer::reset()
 {
+    // 新会话丢弃所有历史证据；下一个对象重新从 logical_id=1 编号。
     objects_.clear();
     next_logical_id_ = 1;
     bootstrap_started_at_.reset();
@@ -55,12 +59,14 @@ void SemanticStabilizer::reset()
 
 float SemanticStabilizer::area(const cv::Rect2f& box)
 {
+    // 无效框的负边长按零计面积，后续尺寸相似度/IoU 因而退化为零证据。
     return std::max(0.0F, box.width) * std::max(0.0F, box.height);
 }
 
 float SemanticStabilizer::intersection_over_union(const cv::Rect2f& first,
                                                   const cv::Rect2f& second)
 {
+    // 与 IoU tracker 同一几何定义；退化到零并集时返回零而不是 NaN。
     const float left = std::max(first.x, second.x);
     const float top = std::max(first.y, second.y);
     const float right = std::min(first.x + first.width, second.x + second.width);
@@ -73,6 +79,7 @@ float SemanticStabilizer::intersection_over_union(const cv::Rect2f& first,
 float SemanticStabilizer::center_distance(const cv::Rect2f& first,
                                           const cv::Rect2f& second)
 {
+    // 以框中心衡量位移，尺寸变化不会直接改变距离；随后除以图像对角线获得尺寸无关比例。
     const float first_x = first.x + first.width * 0.5F;
     const float first_y = first.y + first.height * 0.5F;
     const float second_x = second.x + second.width * 0.5F;
@@ -92,6 +99,7 @@ bool SemanticStabilizer::can_reassociate(
     }
 
     const double gap = elapsed_seconds(source_timestamp, object.last_seen);
+    // 允许等于窗口上界；超过后不再复用身份，后续会创建新的 logical_id。
     if (gap > config_.reassociation_window_seconds) {
         return false;
     }
@@ -100,14 +108,11 @@ bool SemanticStabilizer::can_reassociate(
     const float normalized_distance = center_distance(object.last_box, detection.box) /
                                       std::max(1.0F, image_diagonal);
     if (object.stable_class_id >= 0 && detection.class_id != object.stable_class_id) {
-        // A class flip may keep the identity only when the new box is almost
-        // the same physical box. Without this gate a distant low-confidence
-        // class (for example a large furniture box) can inherit the cup's
-        // stable label and create a second cup identity beside it.
+        // 稳定类别发生变化时，仅当新框仍几乎覆盖同一物理位置才准许复用身份。
+        // 否则远处的异类低置信框可能继承旧物体的稳定标签，令一个新目标被错误并入旧身份。
         return overlap >= 0.15F || normalized_distance <= 0.05F;
     }
-    // Center distance is the primary cue. IoU is only auxiliary evidence and
-    // does not impose a class-dependent gate.
+    // 同类别时中心距离与 IoU 是“满足任一即可”的几何门槛；中心距离是主线索，IoU 为辅助。
     return normalized_distance <= config_.reassociation_center_distance_ratio ||
            overlap >= config_.reassociation_iou_threshold;
 }
@@ -117,17 +122,18 @@ void SemanticStabilizer::update_class_fusion(
     LogicalObject& object, const Detection& detection,
     std::chrono::steady_clock::time_point source_timestamp, double dt_seconds)
 {
+    // 衰减率定义为“每秒保留比例”，dt=0 不衰减；低于 1 时长时间未见的旧证据逐渐淡化。
     const float decay = std::pow(config_.class_evidence_decay_per_second,
                                  static_cast<float>(std::max(0.0, dt_seconds)));
     for (auto& evidence : object.class_evidence) {
         evidence.second *= decay;
     }
 
+    // 置信度以 [0,1] 加入，最低 0.01 保证极低置信观测仍留下非零类别证据。
     object.class_evidence[detection.class_id] +=
         std::max(0.01F, clamp_unit(detection.confidence));
 
-    // Keep the evidence sparse. The stable class is retained even when it is
-    // not in the three strongest current observations.
+    // 限制证据表最多三个类别，控制长期运行的状态大小；即使稳定类别暂时不在前三，也优先保留它。
     while (object.class_evidence.size() > 3U) {
         auto weakest = object.class_evidence.end();
         for (auto it = object.class_evidence.begin(); it != object.class_evidence.end(); ++it) {
@@ -144,6 +150,7 @@ void SemanticStabilizer::update_class_fusion(
         object.class_evidence.erase(weakest);
     }
 
+    // 第一次观测立即确定初始类别；之后类别改变须证据优势达标，并由同一候选持续 hold 时间。
     if (object.stable_class_id < 0) {
         object.stable_class_id = detection.class_id;
         object.pending_class_id = -1;
@@ -179,6 +186,7 @@ void SemanticStabilizer::update_class_fusion(
     }
 
     const float current_confidence = clamp_unit(detection.confidence);
+    // 置信度平滑与类别票数分开：当前检测质量只占四分之一，减轻单帧置信波动。
     if (!object.has_seen) {
         object.fused_confidence = current_confidence;
     } else {
@@ -188,6 +196,7 @@ void SemanticStabilizer::update_class_fusion(
 
 void SemanticStabilizer::evict_for_capacity()
 {
+    // 限额是防止长时间运行时对象表无界增长；优先删已结束对象，活动对象仅作为最后手段。
     while (objects_.size() > config_.max_live_objects) {
         auto victim = objects_.end();
         int victim_priority = std::numeric_limits<int>::max();
@@ -226,6 +235,7 @@ std::vector<Detection> SemanticStabilizer::update(
         bootstrap_started_at_ = source_timestamp;
     }
 
+    // 先清过期 Exited，再做容量淘汰；过期比较用 >=，时间恰达保留期限即移除。
     objects_.erase(std::remove_if(objects_.begin(), objects_.end(),
                                   [&](const LogicalObject& object) {
                                       return object.state == LogicalObjectState::Exited &&
@@ -236,6 +246,7 @@ std::vector<Detection> SemanticStabilizer::update(
                    objects_.end());
     evict_for_capacity();
 
+    // 归一化位置尺度，以原始帧对角线为单位；框坐标必须与该帧尺寸同一坐标系。
     const float image_diagonal = std::sqrt(static_cast<float>(frame_width * frame_width) +
                                            static_cast<float>(frame_height * frame_height));
     // A detector/NMS pair can briefly return two boxes for one small object
@@ -243,6 +254,8 @@ std::vector<Detection> SemanticStabilizer::update(
     // second raw track eventually becomes a second logical identity. Collapse
     // only same-class boxes that overlap or touch; separate adjacent objects
     // with a gap remain independent.
+    // 输入去重发生在分配之前：同类近重框或几乎完全重叠的异类框只保留置信度较高者。
+    // 这避免一次检测抖动为同一实体创建两个候选逻辑身份；只比较与已保留框，不做聚类传递闭包。
     std::vector<Detection> detections;
     detections.reserve(tracked_detections.size());
     for (const Detection& candidate : tracked_detections) {
@@ -259,10 +272,12 @@ std::vector<Detection> SemanticStabilizer::update(
                     : 0.0F;
             const float smallest_box_scale =
                 std::sqrt(std::max(0.0F, std::min(candidate_area, kept_area)));
+            // 同类框要有明显重叠，或有轻微重叠且中心距离不超过较小框等效边长的 0.75 倍。
             const bool same_class_shaking_object =
                 overlap >= 0.15F ||
                 (overlap > 0.0F && smallest_box_scale > 0.0F &&
                  center_distance(candidate.box, kept.box) <= 0.75F * smallest_box_scale);
+            // 异类只有高度重合且面积接近时才折叠，避免把相邻或尺度悬殊的真实目标合并。
             const bool same_box_different_class =
                 candidate.class_id != kept.class_id && overlap >= 0.80F &&
                 size_similarity >= 0.75F;
@@ -280,12 +295,12 @@ std::vector<Detection> SemanticStabilizer::update(
         }
     }
 
-    // 先尝试 raw ID 直连，剩余框再用几何与时间证据匹配，每个逻辑对象最多分配一次。
+    // 关联分两阶段：先用未过短时窗口的 raw ID 直连，再为剩余检测做几何/时间贪心重关联。
+    // object_matched 保证同一个既有 logical object 在本次 update 最多被一个检测认领。
     std::vector<int> assignments(detections.size(), -1);
     std::vector<bool> object_matched(objects_.size(), false);
 
-    // The raw tracker id is the strongest available cue while it remains
-    // within the short real-time reassociation window.
+    // raw ID 在短时窗口内是最强的关联线索，但它会因漏检或 tracker 重置变化，不能作为永久身份。
     for (std::size_t detection_index = 0U; detection_index < detections.size();
          ++detection_index) {
         const Detection& detection = detections[detection_index];
@@ -307,9 +322,8 @@ std::vector<Detection> SemanticStabilizer::update(
         }
     }
 
-    // A new raw id can still be the same physical object after a short gap.
-    // Greedy matching is sufficient for the small object counts in this
-    // embedded path; the score deliberately does not use class as a gate.
+    // raw ID 已变化时仍可通过短时几何证据找回同一物体。对象数较少时采用贪心评分即可，
+    // 评分综合中心距离、尺寸相似、IoU 和剩余时间窗口比例；类别不作为硬门槛以允许类别闪烁。
     for (std::size_t detection_index = 0U; detection_index < detections.size();
          ++detection_index) {
         if (assignments[detection_index] >= 0) {
@@ -353,6 +367,7 @@ std::vector<Detection> SemanticStabilizer::update(
         }
     }
 
+    // 对所有旧对象先推进一次时间，包括本轮缺席者；命中对象的 dt 暂存到后面用于正向更新。
     // Advance real-time presence for every live object, including objects
     // missing from this detector update.
     // presence 按真实时间升降，而非简单帧数；检测慢或丢帧时生命周期仍随时间推进。
@@ -364,6 +379,7 @@ std::vector<Detection> SemanticStabilizer::update(
                               : 0.0;
         object_dt[object_index] = dt;
         if (!object_matched[object_index]) {
+            // 漏检时 presence 线性按 beta*秒下降，并进入 LostPending；Candidate 也保留以便短时续接。
             object.presence_score = clamp_unit(
                 object.presence_score - config_.presence_beta * static_cast<float>(dt));
             if (object.state != LogicalObjectState::Exited) {
@@ -376,6 +392,7 @@ std::vector<Detection> SemanticStabilizer::update(
                 elapsed_seconds(source_timestamp, object.last_seen) >=
                     config_.max_lost_time_seconds &&
                 object.presence_score <= config_.exit_threshold) {
+                // 两个条件必须同时成立才终结身份：丢失时间足够长且残余存在分数低于退出门槛。
                 object.state = LogicalObjectState::Exited;
                 object.exited_at = source_timestamp;
             }
@@ -402,6 +419,7 @@ std::vector<Detection> SemanticStabilizer::update(
             object.last_update = source_timestamp;
             object.initialized = true;
             object.has_seen = false;
+            // 新逻辑身份从首帧建立 Candidate；若本帧再无容量则上面会跳过该检测，不分配部分对象。
             object.raw_track_id = detection.track_id;
             object.last_box = detection.box;
             object_matched.push_back(true);
@@ -413,6 +431,7 @@ std::vector<Detection> SemanticStabilizer::update(
                               : 0.0;
         const bool was_active = object.state == LogicalObjectState::Active ||
                                 object.active_before_loss;
+        // 有效观测按真实 dt 增加存在证据；置信度为零时不会加分，但仍更新“看见”时间和框。
         object.presence_score = clamp_unit(
             object.presence_score + config_.presence_alpha * clamp_unit(detection.confidence) *
                                       static_cast<float>(dt));
@@ -426,8 +445,9 @@ std::vector<Detection> SemanticStabilizer::update(
         object.active_before_loss = false;
 
         // 已激活对象从短时丢失恢复后沿用 logical_id；新候选需跨越进入门限和稳定时长。
+        // 活动身份短时恢复不重新经过 ENTER 门槛，避免在 ROI 端产生重复进入事件。
         if (was_active) {
-            // LOST_PENDING -> ACTIVE recovery never creates a second ENTER.
+            // LostPending 恢复为 Active 时沿用原业务身份，不再次制造 ENTER。
             object.state = LogicalObjectState::Active;
         } else if (object.state != LogicalObjectState::Exited) {
             object.state = LogicalObjectState::Candidate;
@@ -439,6 +459,7 @@ std::vector<Detection> SemanticStabilizer::update(
                                     *object.enter_threshold_reached_at) >=
                     config_.enter_stability_seconds) {
                     object.state = LogicalObjectState::Active;
+                    // 静音只针对启动早期已出现的基线对象；后续新对象不受全局启动时间影响。
                     const double age = elapsed_seconds(source_timestamp, object.first_seen);
                     object.bootstrap_baseline =
                         age < config_.bootstrap_mute_seconds &&
@@ -450,6 +471,7 @@ std::vector<Detection> SemanticStabilizer::update(
             }
         }
 
+        // 进入前的候选不会向显示/ROI 泄漏；成为 Active 的这一帧立即进入输出。
         if (object.state != LogicalObjectState::Active) {
             continue;
         }

@@ -9,6 +9,8 @@
 
 namespace edgevision {
 
+// Candidate 尚在积累出现证据；Active 可参与显示和 ROI 事件；
+// LostPending 暂时失联但可能找回；Exited 是本轮对象生命周期已结束。
 enum class LogicalObjectState {
     Candidate,
     Active,
@@ -16,7 +18,9 @@ enum class LogicalObjectState {
     Exited,
 };
 
-// box 始终是源图像素坐标；track_id 是短期关联，logical_id 是连续存在的业务身份。
+// 一条检测在 YOLO、跟踪和稳定器之间逐步补全：class/confidence/box
+// 来自检测器，track_id 来自帧间 IoU 关联，logical_id 和 lifecycle_state
+// 来自语义稳定器。box 使用源图像素，不是 640x640 模型画布坐标。
 struct Detection {
     int class_id = -1;
     float confidence = 0.0F;
@@ -31,7 +35,9 @@ struct Detection {
     bool suppress_enter = false;
 };
 
-// 保存源图到模型画布的缩放和填充参数，供检测框从模型坐标回到源图。
+// 前处理把源图等比例映射到模型画布；scale 和左/上 pad
+// 记录这个变换，后处理按 x_source=(x_model-pad_x)/scale 逆变换。
+// original_* 用来裁剪逆变换后的框，model_* 表示输入画布尺寸。
 struct LetterboxInfo {
     float scale = 1.0F;
     int pad_x = 0;
@@ -42,12 +48,16 @@ struct LetterboxInfo {
     int model_height = 0;
 };
 
+// rgb_image 是 letterbox 后的 RGB Mat；nhwc 是供 RKNN 输入使用的
+// 自有连续 uint8 字节。二者与原始 BGR 帧分离，letterbox 留给框坐标逆变换。
 struct PreparedInput {
     cv::Mat rgb_image;
     std::vector<std::uint8_t> nhwc;
     LetterboxInfo letterbox;
 };
 
+// 归一化 ROI：x/y 是左上角，width/height 是相对整幅源图的比例。
+// 如 (0,0,1,1) 覆盖整帧；它不是直接以像素表示的矩形。
 struct NormalizedRoi {
     float x = 0.0F;
     float y = 0.0F;
@@ -61,6 +71,10 @@ enum class InputMode {
     NetworkCamera,
 };
 
+// 单位为毫秒的阶段耗时与单位为帧/秒的吞吐量放在同一结构。
+// inference_ms 仅统计 rknn_run；pre/post 分别统计 CPU 前后处理。
+// display_fps 是显示循环，detection_fps 是已完成推理，两者可以不同；
+// display_result_age_ms 是 AI 结果完成后到画面使用它时经过的时间。
 struct FrameMetrics {
     double preprocess_ms = 0.0;
     double inference_ms = 0.0;
@@ -85,6 +99,8 @@ struct DetectionResult {
     std::size_t nms_suppressed_count = 0U;
 };
 
+// CLI 解析后的应用配置。input_mode 决定文件、板载摄像头或网络流分支；
+// 阈值参与解码/NMS，roi 只在区域监控路径使用。无参默认值在此集中定义。
 struct AppOptions {
     InputMode input_mode = InputMode::File;
     std::string model_path;
@@ -111,6 +127,9 @@ struct AppOptions {
     NormalizedRoi roi;
 };
 
+// rknn_query 返回的张量描述副本。dims/format/type 决定如何遍历字节；
+// INT8/UINT8 读值时用 (q-zero_point)*scale 还原浮点，不能把输出字节
+// 直接当作 float 或假定所有输出共用同一套量化参数。
 struct TensorMeta {
     int index = -1;
     std::string name;
@@ -124,7 +143,8 @@ struct TensorMeta {
     float scale = 1.0F;
 };
 
-// 只借用 RKNN 输出字节；data 的有效期不得超过对应 RknnOutputBatch。
+// 只借用 RKNN 输出 buf，同时保存长度和属性副本以供边界检查。
+// data 的有效期不得超过对应 RknnOutputBatch；视图自身不负责 release。
 struct RawTensorView {
     const void* data = nullptr;
     std::size_t size = 0;

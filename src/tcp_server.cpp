@@ -23,6 +23,7 @@ namespace edgevision {
 namespace {
 
 constexpr std::size_t kMaxCommandLength = 1024U;
+// poll 周期性醒来观察停止标志，stop() 不必从另一线程关闭正在轮询的 fd。
 constexpr int kPollTimeoutMs = 100;
 
 #if defined(__linux__)
@@ -59,6 +60,7 @@ void TcpServer::start()
         throw std::runtime_error("TCP server is already running");
     }
 
+    // 监听 socket 在调用线程创建和配置；配置完整后才交给工作线程使用。
     const int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         throw std::runtime_error("TCP socket creation failed");
@@ -69,6 +71,7 @@ void TcpServer::start()
         throw std::runtime_error("TCP SO_REUSEADDR setup failed");
     }
 
+    // 监听所有本机网卡地址；请求端口为 0 时由 getsockname 读取系统分配值。
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -90,6 +93,7 @@ void TcpServer::start()
         throw std::runtime_error("TCP could not query bound port");
     }
 
+    // 每轮 start 建立新会话状态，清除前轮残留事件，避免发给后来连接的客户端。
     stop_requested_.store(false);
     subscribed_.store(false);
     {
@@ -109,6 +113,7 @@ void TcpServer::start()
 void TcpServer::stop()
 {
 #if defined(__linux__)
+    // worker 的 poll 最多等待一个短周期，随后检查此标志并负责关闭自己使用的 fd。
     stop_requested_.store(true);
     if (worker_.joinable()) {
         worker_.join();
@@ -192,6 +197,7 @@ void TcpServer::accept_client()
         return;
     }
 
+    // 同时只保留一个客户端；新连接替代旧连接时，旧会话队列和订阅状态作废。
     close_client();
     const int flags = fcntl(accepted, F_GETFL, 0);
     if (flags >= 0) {
@@ -204,6 +210,7 @@ void TcpServer::accept_client()
 
 void TcpServer::close_client()
 {
+    // 对端断开意味着它不再消费事件，因此清除积压，让下次订阅从新事件开始。
     close_fd(client_fd_);
     command_buffer_.clear();
     subscribed_.store(false);
@@ -214,6 +221,7 @@ void TcpServer::close_client()
 // TCP 也是字节流；一个 recv 可能只含半条命令或多条命令，因此按换行拆包。
 void TcpServer::receive_client_data()
 {
+    // recv 返回任意长度的字节片段：既可能是半条命令，也可能含多条完整命令。
     char buffer[4096]{};
     const ssize_t received = recv(client_fd_, buffer, sizeof(buffer), 0);
     if (received == 0) {
@@ -227,10 +235,12 @@ void TcpServer::receive_client_data()
         return;
     }
 
+    // 累积到成员缓存后按换行拆包，保留末尾不足一行的内容等待下次 recv。
     command_buffer_.append(buffer, static_cast<std::size_t>(received));
     for (;;) {
         const std::size_t newline = command_buffer_.find('\n');
         if (newline == std::string::npos) {
+            // 即使客户端始终不发换行，未完成命令也受长度上限约束，避免缓存无限增长。
             if (command_buffer_.size() > kMaxCommandLength) {
                 command_buffer_.clear();
                 send_error("command_too_long");
@@ -256,11 +266,13 @@ void TcpServer::receive_client_data()
 
 void TcpServer::handle_command(const std::string& command)
 {
+    // 协议命令为换行分隔的大写文本；非空未知命令得到一个独立错误响应。
     if (command == "PING") {
         send_line("{\"type\":\"pong\"}\n");
     } else if (command == "GET_STATUS") {
         send_status();
     } else if (command == "SUBSCRIBE_EVENTS") {
+        // 先开启订阅，再返回快照确认；后续新事件由服务线程异步推送。
         subscribed_.store(true);
         send_status();
     } else if (command == "UNSUBSCRIBE_EVENTS") {
@@ -286,10 +298,13 @@ void TcpServer::flush_events()
             if (event_queue_.empty()) {
                 return;
             }
+            // 只在锁内移动出队首，之后在锁外格式化并写 socket，避免慢客户端阻塞生产者。
             queued = std::move(event_queue_.front());
             event_queue_.pop_front();
         }
 
+        // 事件时间来自 steady_clock 的采集时间点；毫秒值位于单调时钟时间轴，
+        // 不能当作可换算为日历日期的 Unix epoch 时间戳。
         const auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                        queued.event.source_timestamp.time_since_epoch())
                                        .count();
@@ -316,6 +331,7 @@ bool TcpServer::send_line(const std::string& line)
     if (client_fd_ < 0) {
         return false;
     }
+    // SOCK_STREAM 不保留消息边界；send 可能只接受部分数据，offset 记录已接受前缀。
     std::size_t offset = 0U;
     while (offset < line.size() && !stop_requested_.load()) {
         const ssize_t sent = send(client_fd_, line.data() + offset, line.size() - offset,
@@ -327,6 +343,7 @@ bool TcpServer::send_line(const std::string& line)
         if (sent < 0 && errno == EINTR) {
             continue;
         }
+        // 非阻塞发送缓冲满时等到可写，再从原 offset 续发，避免截断一行 JSON。
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             pollfd descriptor{client_fd_, POLLOUT, 0};
             if (poll(&descriptor, 1, kPollTimeoutMs) > 0 &&
@@ -341,6 +358,7 @@ bool TcpServer::send_line(const std::string& line)
 
 bool TcpServer::send_status()
 {
+    // 先复制后解锁；构造 JSON 和发送期间，业务线程可继续更新新的完整状态快照。
     TcpStatusSnapshot status;
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
@@ -364,6 +382,7 @@ bool TcpServer::send_status()
 
 bool TcpServer::send_error(const std::string& message)
 {
+    // 错误消息同样转义 JSON 特殊字符，保持响应可被逐行 JSON 解析器读取。
     return send_line("{\"type\":\"error\",\"message\":\"" + json_escape(message) +
                      "\"}\n");
 }

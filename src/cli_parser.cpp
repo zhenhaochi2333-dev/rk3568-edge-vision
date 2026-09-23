@@ -43,6 +43,8 @@ int parse_int(const std::string& text, const char* option)
     return static_cast<int>(value);
 }
 
+// --roi 接受 x,y,width,height 四个归一化数；除语法完整性，还验证
+// 正面积和右/下边不越过 1，避免后续把 ROI 换成像素矩形时越界。
 NormalizedRoi parse_roi(const std::string& text)
 {
     std::stringstream stream(text);
@@ -67,6 +69,8 @@ NormalizedRoi parse_roi(const std::string& text)
 
 }  // namespace
 
+// --input network/local 分别选择 TCP MJPEG 与板载 V4L2；其他 --input
+// 值按文件路径处理。解析结果保存在 AppOptions，由应用层决定实际资源启动。
 CliParseResult CliParser::parse(int argc, char** argv)
 {
     CliParseResult result;

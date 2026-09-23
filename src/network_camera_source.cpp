@@ -1,5 +1,8 @@
-/* PC 发送连续 JPEG 字节流；这里用 SOI/EOI 恢复完整图像，再交给 OpenCV 解码为 BGR。
- * read() 的输出契约是 1280x720 CV_8UC3，供后续公共检测路径使用。
+/*
+ * 网络摄像头输入是 FFmpeg 写入 TCP :5600 的连续 MJPEG 字节，而非带长度的消息。
+ * 每个 recv 的边界都与 JPEG 帧无关：从流中寻找 SOI/EOI，保留残片，优先取
+ * 最新完整图像，然后由 imdecode 得到 1280x720 CV_8UC3 BGR 帧。
+ * 这个 BGR 契约与板载 V4L2 输入一致，应用层无需知道采集来源。
  */
 #include "edgevision/network_camera_source.hpp"
 
@@ -25,6 +28,8 @@ namespace edgevision {
 
 namespace {
 
+// 接收块大小只影响一次读的上限，不定义一帧大小；未闭合 JPEG 的
+// 累计缓冲区另设 16 MiB 恢复上限，避免失去 EOI 后无限积累旧字节。
 constexpr std::size_t kReceiveChunkSize = 64U * 1024U;
 constexpr std::size_t kMaximumBufferedJpegBytes = 16U * 1024U * 1024U;
 constexpr int kPollTimeoutMs = 100;
@@ -58,6 +63,8 @@ std::string NetworkCameraSource::make_pipeline(int port)
            " ! jpeg SOI/EOI framing ! OpenCV imdecode(BGR)";
 }
 
+// 创建非阻塞监听 socket。真正的客户端连接可能在板端先启动很久后才到来；
+// open 不等待发送端，read 用短 poll 周期让外层采集线程仍能响应停止。
 void NetworkCameraSource::open()
 {
 #if !defined(__linux__)
@@ -74,6 +81,8 @@ void NetworkCameraSource::open()
                                  std::strerror(errno));
     }
 
+    // 重启程序或重新监听同一端口时允许尽快 bind；socket 的所有权在
+    // server_fd_ 接管前仍属于局部 fd，失败分支自行 close。
     int reuse = 1;
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     if (set_nonblocking(fd) < 0) {
@@ -103,6 +112,8 @@ void NetworkCameraSource::open()
     server_fd_ = fd;
     client_fd_ = -1;
     stream_buffer_.clear();
+    // 此处是本输入适配器接受的固定协议参数，不是从 JPEG 或 TCP 协商出的值；
+    // read 在每次 imdecode 后还会验证实际尺寸和 CV_8UC3 类型。
     info_.width = 1280;
     info_.height = 720;
     info_.fps = 15.0;
@@ -113,10 +124,13 @@ void NetworkCameraSource::open()
 #endif
 }
 
-// TCP 不保留发送端写入边界：一次 recv 可含半张、多张或跨张 JPEG。
-// stream_buffer_ 保留未闭合的尾部，仅取最近一张完整 JPEG 来控制实时延迟。
+// 在累计字节中逐个寻找 JPEG SOI(FF D8) 与 EOI(FF D9)。
+// 若一次 recv 到了多张完整图像，只返回最后一张，旧帧被丢弃以控制显示时延；
+// 最新图像之后的不完整尾巴仍留在 stream_buffer_ 等下次 recv 补齐。
 bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
 {
+    // 标记搜索只在当前累计缓冲区进行；返回索引用于区分已完成帧前缀
+    // 与跨 recv 尚未完成的尾部。
     const auto find_marker = [this](std::size_t start, unsigned char first,
                                      unsigned char second) {
         for (std::size_t index = start; index + 1U < stream_buffer_.size(); ++index) {
@@ -144,7 +158,8 @@ bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
         search_from = latest_end;
     }
 
-    // 尚未收到 EOI 时保留跨 recv 的残片；超大残片按上限尝试丢弃旧前缀。
+    // 没有完整 EOI 就不能调用 imdecode。超过缓冲上限时尝试从靠后的
+    // SOI 重新同步；若找不到则清空旧字节，等待新的 JPEG 起点。
     if (latest_end == std::string::npos) {
         if (stream_buffer_.size() > kMaximumBufferedJpegBytes) {
             const std::size_t last_start = find_marker(
@@ -160,7 +175,8 @@ bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
         return false;
     }
 
-    // 拷贝出 JPEG 后移走其前方所有字节，未完成的新帧仍留在接收缓冲区。
+    // jpeg 获得独立字节副本，可安全传入 imdecode；从 stream_buffer_ 清除
+    // 到 EOI 为止的所有前缀，包括未交付的旧完整帧。
     jpeg.assign(stream_buffer_.begin() + static_cast<std::ptrdiff_t>(latest_start),
                 stream_buffer_.begin() + static_cast<std::ptrdiff_t>(latest_end));
     stream_buffer_.erase(stream_buffer_.begin(),
@@ -168,6 +184,8 @@ bool NetworkCameraSource::extract_latest_jpeg(std::vector<unsigned char>& jpeg)
     return true;
 }
 
+// 在 lifecycle_mutex_ 保护下关闭当前连接并丢弃残帧；新客户端必须
+// 从自己的 SOI 开始，不能与上一条 TCP 连接的尾部拼接。
 void NetworkCameraSource::close_client_locked()
 {
 #if defined(__linux__)
@@ -180,7 +198,8 @@ void NetworkCameraSource::close_client_locked()
     stream_buffer_.clear();
 }
 
-// 成功返回一张完整 BGR 帧；超时/断线返回 false，让外层采集线程决定重试与重连。
+// read 一次最多交付一张完整图像。短时 poll 超时或断线返回 false；
+// CameraCaptureThread 统计连续失败并负责重开，而这里保存跨 recv 的字节状态。
 bool NetworkCameraSource::read(cv::Mat& frame)
 {
     frame.release();
@@ -197,7 +216,8 @@ bool NetworkCameraSource::read(cv::Mat& frame)
 
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-            // 只有完整压缩图像才进入 imdecode，避免把 TCP 分片误作一帧。
+            // imdecode 只看抽出的完整 JPEG 副本。解码后的 BGR 像素缓冲由
+            // frame(cv::Mat) 管理，不依赖下面的接收数组或压缩字节 vector。
             if (extract_latest_jpeg(jpeg)) {
                 frame = cv::imdecode(jpeg, cv::IMREAD_COLOR);
                 if (frame.empty()) {
@@ -225,6 +245,8 @@ bool NetworkCameraSource::read(cv::Mat& frame)
             return false;
         }
 
+        // 尚无发送端时监听 fd 等待 accept；已有连接时转为轮询客户端。
+        // 两种等待都有 100 ms 上限，供外层定期检查停止/失败状态。
         if (client_fd < 0) {
             pollfd server_poll{};
             server_poll.fd = server_fd;
@@ -251,6 +273,7 @@ bool NetworkCameraSource::read(cv::Mat& frame)
                 close(accepted);
                 return false;
             }
+            // 重连后清除旧客户端及其残留 JPEG 前缀，再接管新 fd。
             close_client_locked();
             client_fd_ = accepted;
             continue;
@@ -277,7 +300,8 @@ bool NetworkCameraSource::read(cv::Mat& frame)
             return false;
         }
 
-        // recv 的长度由当前可用字节决定，与 JPEG 大小和发送次数均无一一对应关系。
+        // 64 KiB 只是本次读取容量。recv 可能得到任意正长度；追加到
+        // stream_buffer_ 后重新检查完整 SOI/EOI，而非把本次返回当作一帧。
         const ssize_t received = recv(client_fd, receive_buffer.data(), receive_buffer.size(), 0);
         if (received > 0) {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
@@ -298,7 +322,8 @@ bool NetworkCameraSource::read(cv::Mat& frame)
 #endif
 }
 
-// 关闭客户端和监听 fd，并设置停止标志以中断采集线程的轮询/读取。
+// release 可由 CameraCaptureThread 的停止路径调用：先立停止标志，
+// 再在锁内 shutdown/close 连接及监听 fd，避免 read 继续等待网络数据。
 void NetworkCameraSource::release()
 {
     stop_requested_.store(true);

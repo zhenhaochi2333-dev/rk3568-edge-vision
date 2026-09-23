@@ -1,7 +1,9 @@
 /*
- * 正式网络演示的数据流：PC JPEG/TCP -> BGR 帧 -> YOLO11 RKNN -> 原始 IoU 跟踪
- * -> 语义 logical_id -> ROI 事件 -> 本地显示、RTSP 和 TCP 事件。
- * 图像、视频和板载 V4L2 摄像头使用同一个检测器，但有各自的输入/输出循环。
+ * 正式网络演示：PC JPEG/TCP -> 板端 1280x720 BGR -> RGB/NHWC 模型输入
+ * -> RKNN 推理 -> YOLO11 CPU 解码 -> raw track_id -> 业务 logical_id
+ * -> ROI 事件 -> 本地 BGR 显示 / MPP H.264 RTSP / TCP JSON。
+ * 文件、板载 V4L2 和网络源共用检测器；实时网络模式把采集、AI 与 UI 分开，
+ * 让显示读取最新帧和最近完成的推理结果，而不是排队等待每一帧都推理。
  */
 #include "edgevision/application.hpp"
 
@@ -139,6 +141,8 @@ std::string format_detection(const Detection& detection, const std::vector<std::
     return line.str();
 }
 
+// RegionMonitor 已经决定本轮的新事件；这里仅把类 ID 映射为标签并送入
+// TCP 服务队列。UI 提示和网络事件由同一份 RegionSnapshot 驱动。
 void publish_region_events(TcpServer* tcp_server,
                            const std::vector<RegionEvent>& events,
                            const std::vector<std::string>& labels)
@@ -197,6 +201,8 @@ void log_image_metrics(const FrameMetrics& metrics)
              std::to_string(metrics.end_to_end_ms) + " ms");
 }
 
+// 单张图片路径只做一次检测和绘制：没有采集线程，也不维护跨帧
+// track_id/logical_id。end_to_end 在这里从调用检测到合成结束计时。
 int run_image(const AppOptions& options, const std::vector<std::string>& labels,
               Yolo11Detector& detector, const cv::Mat& image)
 {
@@ -253,6 +259,8 @@ constexpr std::size_t kCameraWarmupFrames = 30U;
 
 volatile std::sig_atomic_t g_stop_requested = 0;
 
+// 一张完成的帧及其采集序号、单调时钟时间点一起发布。
+// shared_ptr<const ...> 使采集者替换 latest_ 后，UI/AI 仍可安全读取旧快照。
 struct CameraFrameSnapshot {
     cv::Mat frame;
     std::uint64_t sequence = 0U;
@@ -266,6 +274,8 @@ struct CameraCaptureStats {
     double captured_fps = 0.0;
 };
 
+// 本地 V4L2 与网络 JPEG/TCP 的共同接口：两者 read 都交出 1280x720 BGR。
+// 上层只依赖帧契约，网络重连与驱动缓冲细节留在各自适配器中。
 class CaptureInput {
 public:
     virtual ~CaptureInput() = default;
@@ -315,7 +325,9 @@ private:
     const std::string name_;
 };
 
-// 采集线程与显示、AI 解耦：只保留最新的完整帧，消费者慢时覆盖旧帧而不排队累积延迟。
+// 采集线程唯一拥有 CaptureInput，UI/AI 只收到不可变帧快照。
+// latest_ 是容量为一的最新值槽：新帧覆盖尚未消费的旧帧，让推理较慢时
+// 显示尽量跟上现场，而不是让一条 FIFO 队列积累过期画面。
 class CameraCaptureThread {
 public:
     explicit CameraCaptureThread(std::shared_ptr<CaptureInput> source)
@@ -335,6 +347,8 @@ public:
     CameraCaptureThread(const CameraCaptureThread&) = delete;
     CameraCaptureThread& operator=(const CameraCaptureThread&) = delete;
 
+    // 启动后等待 source->open 的成功/失败信号；调用者在获知输入契约与
+    // pipeline 信息之前不会开始显示或启动依赖该采集源的后续组件。
     void start()
     {
         worker_ = std::thread(&CameraCaptureThread::run, this);
@@ -348,7 +362,8 @@ public:
         }
     }
 
-    // sequence 避免重复消费同一帧；shared_ptr 让 UI/AI 持有快照时底层 Mat 继续存活。
+    // last_sequence 是调用者见过的最后一帧；只交付更大的 sequence。
+    // 返回的 shared_ptr 保住 cv::Mat 像素的引用计数，不受 latest_ 更新影响。
     bool wait_for_new(std::shared_ptr<const CameraFrameSnapshot>& snapshot,
                       std::uint64_t last_sequence)
     {
@@ -393,6 +408,8 @@ public:
         return pipeline_;
     }
 
+    // captured_fps = 采集成功帧数 / 采集线程墙钟时长；overwritten_frames
+    // 统计最新槽覆盖了尚未被 UI 消费的帧，不等于网络丢包数。
     CameraCaptureStats stats() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -415,6 +432,8 @@ public:
         return result;
     }
 
+    // 除设置本线程的停止位，还主动 release 输入源以打断等待中的网络
+    // read；随后通知条件变量，使等待新帧的 UI 可以退出。
     void request_stop()
     {
         std::shared_ptr<CaptureInput> source;
@@ -448,6 +467,8 @@ private:
         condition_.notify_all();
     }
 
+    // 采集线程从 open 到 release 独占 source。每轮 read 得到一张 BGR Mat，
+    // 校验尺寸后将整个 Mat 移入快照；下一次 read 使用空的 capture_frame。
     void run()
     {
         const std::shared_ptr<CaptureInput> source = source_;
@@ -474,7 +495,8 @@ private:
                 }
 
                 const Clock::time_point camera_read_start = Clock::now();
-                // 输入可能暂时读不到完整帧；连续失败后重开本地设备或网络监听以恢复采集。
+                // 网络源一次 poll 未取到完整 JPEG 也会返回 false；连续五次
+                // 失败才 release 并等待 500 ms 重开。本地源也走同一恢复机制。
                 if (!source->read(capture_frame)) {
                     camera_read_ms_total_ +=
                         std::chrono::duration<double, std::milli>(Clock::now() - camera_read_start)
@@ -527,6 +549,8 @@ private:
                     return;
                 }
 
+                // 从这里到发布 latest_ 前，next 仍由采集线程独占；
+                // 发布后 UI 与 AI 可分别持有同一帧，避免再复制整张 1280x720 图像。
                 std::shared_ptr<CameraFrameSnapshot> next(new CameraFrameSnapshot());
                 // Move the completed capture buffer into immutable shared ownership. The
                 // next source read receives the now-empty local Mat, so it cannot
@@ -540,6 +564,8 @@ private:
                     if (stop_requested_) {
                         break;
                     }
+                    // 判断被覆盖的旧序号是否已被等待者消费，用于报告采集速率
+                    // 与显示速率不匹配的程度；覆盖不影响仍持有快照的 AI 工作。
                     if (latest_ != nullptr && latest_->sequence > last_consumed_sequence_) {
                         ++overwritten_frames_;
                     }
@@ -666,7 +692,9 @@ struct RealtimeDisplayProfileTotals {
     }
 };
 
-// AI 结果带源帧序号和完成时间；显示线程可复用上一轮结果并计算结果年龄。
+// AI 的 generation 只在一次完整检测/稳定结束时增加；source_frame_id
+// 指向被推理的相机帧。UI 可在后续多个相机帧上复用这批框，finished_at
+// 则用于测量结果自完成到显示时的年龄。
 struct SmoothDetectionSnapshot {
     std::uint64_t generation = 0U;
     std::uint64_t source_frame_id = 0U;
@@ -705,7 +733,9 @@ const char* logical_state_name(LogicalObjectState state)
     return "unknown";
 }
 
-// 可选 CSV 追踪保留 raw/tracked/stabilized 与输出时刻，便于分开观察算法和显示延迟。
+// 诊断 CSV 为同一源帧记录 raw、tracked、stabilized 三个阶段及输出标记。
+// 时刻采用 steady_clock 相对首帧的毫秒数；它与 PC 事件 CSV 的本地墙钟
+// 时间不是同一坐标系，不应直接按数值相减。
 class TrackTraceWriter {
 public:
     explicit TrackTraceWriter(const std::string& path)
@@ -731,6 +761,8 @@ public:
         return output_.is_open();
     }
 
+    // 每个阶段可有多条检测框，空结果也写一行；pending_timings_ 暂存
+    // 时间线，等待之后的 RTSP 发布或本地显示标记补齐输出延迟。
     void write(const TraceTiming& timing,
                const std::vector<Detection>& raw,
                const std::vector<Detection>& tracked,
@@ -810,6 +842,8 @@ private:
         }
     }
 
+    // detector/tracker/stabilizer_ms 由相邻时间点作差；pre/infer/post
+    // 来自检测器内部计时，output_latency 则从稳定器完成算到实际输出标记。
     void write_detection_row_locked(const TraceTiming& timing, const char* stage,
                                     Clock::time_point stage_at,
                                     const Detection* detection,
@@ -863,7 +897,9 @@ private:
     std::map<std::uint64_t, TraceTiming> pending_timings_;
 };
 
-// 单独线程串行执行检测、跟踪、稳定与 ROI 更新；一个待处理槽位限制推理积压。
+// AI 工作线程独占 RknnModel 调用链、tracker、stabilizer 和 ROI 状态。
+// 只有一个 pending_frame_，且 busy 时拒绝提交；因此输入采样可跳帧，
+// 但这些有状态模块始终按接受的帧顺序更新。
 class SmoothAiWorker {
 public:
     SmoothAiWorker(Yolo11Detector& detector, const NormalizedRoi* roi,
@@ -886,7 +922,8 @@ public:
     SmoothAiWorker(const SmoothAiWorker&) = delete;
     SmoothAiWorker& operator=(const SmoothAiWorker&) = delete;
 
-    // AI 忙或已有待处理帧时拒绝提交；采集与显示不必等待较慢的 NPU 推理。
+        // UI 只尝试递交当前快照，不等待 NPU。busy_/pending_ 防止同时存在
+    // 多个待推理帧；返回 false 时该帧仍可显示，只是不进入 AI 路径。
     bool submit(std::shared_ptr<const CameraFrameSnapshot> frame_snapshot)
     {
         if (frame_snapshot == nullptr) {
@@ -909,6 +946,8 @@ public:
         return true;
     }
 
+    // 在短锁内复制一份最近完成的结果；复制后 UI 持有自己的 detections
+    // 和 events，不依赖工作线程下一轮覆盖 latest_ 的时间点。
     bool copy_latest(SmoothDetectionSnapshot& snapshot) const
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -948,6 +987,8 @@ public:
     }
 
 private:
+    // 等待 pending_ 后把快照移出槽位，再在锁外执行耗时的推理和后处理；
+    // 最终一次性更新 latest_，UI 不会读到半完成的检测结果。
     void run()
     {
         for (;;) {
@@ -966,7 +1007,9 @@ private:
             try {
                 const cv::Mat& frame = frame_snapshot->frame;
                 const Clock::time_point detector_started_at = Clock::now();
-                // 原始检测框仍是源图坐标；tracker 给短期 track_id，稳定器给业务 logical_id。
+                // detect_with_metrics 已把模型框还原为源图像素坐标。
+                // tracker 按相邻检测框维护短期 raw ID；stabilizer 用时间、
+                // 几何和类别证据给持续存在的对象分配 logical_id。
                 const DetectionResult result = detector_.detect_with_metrics(frame);
                 const Clock::time_point detector_finished_at = Clock::now();
                 const std::vector<Detection> tracked_detections = tracker_.update(result.detections);
@@ -991,7 +1034,8 @@ private:
                                          stabilized_detections);
                 }
                 RegionSnapshot region;
-                // ROI 只接收稳定后的活动对象，并用源帧时间推进驻留/丢失计时。
+                // RegionMonitor 不直接接收所有原始 YOLO 框；它只看稳定器
+                // 本次返回的活动对象，并用采集时间推进驻留及丢失窗口。
                 if (region_monitor_ != nullptr) {
                     region = region_monitor_->update(stabilized_detections,
                                                      frame_snapshot->captured_at,
@@ -1005,6 +1049,8 @@ private:
                         .count();
 
                 std::lock_guard<std::mutex> lock(mutex_);
+                // 只有整条检测/跟踪/事件链成功时才递增 generation；
+                // UI 据此避免把同一批事件多次发布。
                 latest_.generation += 1U;
                 latest_.source_frame_id = frame_snapshot->sequence;
                 latest_.detections = std::move(stabilized_detections);
@@ -1065,7 +1111,9 @@ void verify_video_output(const VideoWriterInfo& info)
     }
 }
 
-// 正式网络路径：采集与 AI 在独立线程推进；UI 用最新帧和最近完成的检测结果合成并发布画面。
+// 正式网络演示进入此循环：CameraCaptureThread 交出最新 BGR 帧，
+// SmoothAiWorker 异步处理其中一部分帧，UI 合成最近完成的检测结果。
+// 网络模式还启动 RTSP :8554；显示、AI 和采集 FPS 分别统计。
 int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                       const std::vector<std::string>& labels, TcpServer* tcp_server)
 {
@@ -1089,6 +1137,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     } else {
         capture_input = std::make_shared<LocalCaptureInput>(options.camera_path);
     }
+    // CameraCaptureThread 接管输入适配器，主线程之后不再直接调用 read；
+    // start 等待监听 socket 或 V4L2 设备成功 open。
     CameraCaptureThread camera(std::move(capture_input));
     camera.start();
     const CameraSourceInfo source = camera.info();
@@ -1099,6 +1149,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
 
 #if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
     std::unique_ptr<RtspStreamer> rtsp_streamer;
+    // 只有网络演示分支建立检测画面的 RTSP 输出。JPEG/TCP 输入与
+    // H.264/RTSP 输出分别占用端口和编解码链，不共享压缩帧。
     if (network_input) {
         rtsp_streamer.reset(new RtspStreamer(8554));
         rtsp_streamer->start();
@@ -1147,6 +1199,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     Clock::time_point last_network_status{};
     std::string error_message;
 
+    // 无论正常退出还是异常，都先停输出服务，再停 AI 与采集线程并 join，
+    // 最后销毁窗口；局部对象离开作用域时仍各自执行 RAII 清理。
     const auto cleanup = [&] {
 #if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
         if (rtsp_streamer != nullptr) {
@@ -1168,6 +1222,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 throw std::runtime_error("smooth-preview AI worker failed: " + error_message);
             }
             const Clock::time_point frame_acquire_start = Clock::now();
+            // 等新 sequence，而不是按 15 FPS 固定 sleep；如果源连续覆写，
+            // UI 从 latest_ 直接跳到最新帧，不追赶已经过期的队列。
             if (!camera.wait_for_new(frame_snapshot, last_displayed_sequence)) {
                 if (camera.failed(error_message)) {
                     throw std::runtime_error("smooth-preview camera capture failed: " +
@@ -1192,7 +1248,9 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             }
             SmoothDetectionSnapshot snapshot;
             const Clock::time_point snapshot_copy_start = Clock::now();
-            // 只对新一代 AI 结果发布一次事件；重复显示旧检测框不会重复触发 ENTER/DWELL/EXIT。
+            // 同一检测结果可以覆盖多个显示帧，但 RegionSnapshot.new_events
+            // 只能在 generation 首次出现时取出并发布一次，否则旧事件会重复。
+            // source_frame_id 保留事件所对应的真实推理帧，而非当前 UI 帧。
             if (worker.copy_latest(snapshot) && snapshot.generation != last_generation) {
                 completed_inferences +=
                     static_cast<std::size_t>(snapshot.generation - last_generation);
@@ -1210,6 +1268,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 throw std::runtime_error("smooth-preview AI worker failed: " + error_message);
             }
 
+            // 提交的是这轮显示看到的相机快照；AI 忙时记录 skipped_frames，
+            // 当前 UI 帧仍继续绘制，保持交互流畅而不积累推理队列。
             if (worker.submit(frame_snapshot)) {
                 ++submitted_frames;
             } else {
@@ -1221,11 +1281,15 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 std::chrono::duration<double>(display_now - display_wall_start).count();
             FrameMetrics display_metrics = latest_metrics;
             display_metrics.object_count = static_cast<double>(latest_detections.size());
-            // 显示 FPS 计显示循环次数，检测 FPS 计完成的推理次数；二者不要求相等。
+            // 两个吞吐率共用显示段的墙钟分母：displayed_frames 计合成/显示
+            // 的相机帧，completed_inferences 计 AI 工作线程完成的代数。
+            // captured_fps 则由采集线程自己的成功帧数和采集时长计算。
             display_metrics.display_fps =
                 elapsed_s > 0.0 ? static_cast<double>(displayed_frames + 1U) / elapsed_s : 0.0;
             display_metrics.detection_fps =
                 elapsed_s > 0.0 ? static_cast<double>(completed_inferences) / elapsed_s : 0.0;
+            // display_result_age 从 AI 完成到 UI 此刻读取结果；这个值可随
+            // 同一结果反复显示而增加，不能当作本轮 rknn_run 的耗时。
             if (latest_result_finished != Clock::time_point{}) {
                 display_metrics.display_result_age_ms =
                     std::chrono::duration<double, std::milli>(display_now - latest_result_finished)
@@ -1235,6 +1299,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 ++result_age_samples;
             }
 
+            // TCP 状态快照按约 250 ms 更新，而非每个 UI 帧都序列化；
+            // 服务线程从其内部拷贝状态并回答 GET_STATUS。
             if (tcp_server != nullptr &&
                 (last_network_status == Clock::time_point{} ||
                  std::chrono::duration<double>(display_now - last_network_status).count() >= 0.25)) {
@@ -1245,9 +1311,13 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
                 last_network_status = display_now;
             }
 
-            // 合成结果仍是 BGR；同一帧交给本地窗口和 RTSP 发布。
+            // composer 在当前最新 BGR 帧上绘制最近完成的稳定检测框与事件。
+            // 返回内部 BGR canvas 的引用；本轮立即送入 RTSP 缓冲和 HighGUI。
+            // RTSP publish 会复制像素，之后 canvas 可供下一轮 compose 复用。
             const cv::Mat& composed = composer.compose(
                 frame, latest_detections, latest_new_events, active_roi, options.show_roi);
+            // toast 消费本次事件后清空 UI 临时列表；事件的网络发布已在
+            // 新 generation 到达时完成。
             latest_new_events.clear();
 #if defined(EDGEVISION_WITH_RTSP) && EDGEVISION_WITH_RTSP
             if (rtsp_streamer != nullptr) {
@@ -1277,6 +1347,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             } catch (const cv::Exception& error) {
                 throw std::runtime_error(std::string("smooth-preview display failed: ") + error.what());
             }
+            // 本地窗口的输出标记只写每代 AI 结果一次；RTSP 发布可在
+            // 多个 UI 帧复用同一结果，诊断 CSV 据此区分两条输出路径。
             if (last_generation != 0U && displayed_trace_generation != last_generation) {
                 trace_writer.mark_output(latest_trace_frame_id, "local_display",
                                          Clock::now(), true);
@@ -1288,6 +1360,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
             display_wall_end = loop_end;
             const double loop_ms =
                 std::chrono::duration<double, std::milli>(loop_end - loop_start).count();
+            // 前 30 个显示帧跳过窗口/管线启动抖动；profile 只对之后
+            // 的循环累计各阶段耗时，而总体 displayed_frames 仍包含预热帧。
             if (displayed_frames > kCameraWarmupFrames) {
                 if (!display_profile_started) {
                     display_profile_started = true;
@@ -1333,7 +1407,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     const double detection_fps = elapsed_s > 0.0
                                      ? static_cast<double>(completed_inferences) / elapsed_s
                                      : 0.0;
-    // 结果年龄从 AI 完成到显示读取计算，不是相机采集到显示的总延迟。
+    // 汇总的 result_age 是显示循环观察到的 AI 结果年龄；
+    // capture_to_output、AI latency 与 rknn_run 耗时在 trace/metrics 中另计。
     const double average_result_age = result_age_samples > 0U
                                           ? result_age_sum_ms /
                                                 static_cast<double>(result_age_samples)
@@ -1384,6 +1459,8 @@ int run_smooth_camera(const AppOptions& options, Yolo11Detector& detector,
     return 0;
 }
 
+// 离线视频逐帧同步检测并写文件；没有实时模式的独立采集/AI 线程，
+// 也不运行短期跟踪、语义稳定和 ROI 生命周期。
 int run_video(const AppOptions& options, Yolo11Detector& detector,
               const std::vector<std::string>& labels)
 {
@@ -1432,6 +1509,8 @@ int run_video(const AppOptions& options, Yolo11Detector& detector,
                                   compose_timings.toast_ms;
         metrics.end_to_end_ms =
             std::chrono::duration<double, std::milli>(visualization_end - e2e_start).count();
+        // 等第一张标注帧确定真实输出尺寸后才开 writer。VideoIO 可在
+        // mp4v 不可用时改用 MJPG AVI，并记录实际路径供结束后验证。
         if (!video.output_open()) {
             video.open_output(options.output_path, source.fps > 0.0 ? source.fps : 30.0,
                               output.size(), options.force);
@@ -1492,6 +1571,8 @@ int run_video(const AppOptions& options, Yolo11Detector& detector,
     return 0;
 }
 
+// 板载 V4L2 同步循环：一张帧内依次检测、跟踪、稳定、ROI、绘制和输出。
+// 与网络 smooth-preview 模式不同，这条路径的读取和推理在同一循环。
 int run_camera(const AppOptions& options, Yolo11Detector& detector,
                const std::vector<std::string>& labels, TcpServer* tcp_server)
 {
@@ -1576,9 +1657,13 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
 
         const auto e2e_start = Clock::now();
         const auto captured_at = Clock::now();
+        // 该路径等待当前帧推理完才进入下一次 camera.read；
+        // 这里的 processed 与实际完成检测的帧一一对应。
         const auto detector_started_at = Clock::now();
         const DetectionResult result = detector.detect_with_metrics(frame);
         const auto detector_finished_at = Clock::now();
+        // 有状态对象按帧顺序更新；raw 跟踪结果和 stabilized 结果分别
+        // 写入可选 trace，ROI 与显示只接收稳定后的对象。
         const std::vector<Detection> tracked_detections = tracker.update(result.detections);
         const auto tracker_finished_at = Clock::now();
         const std::vector<Detection> stabilized_detections =
@@ -1672,6 +1757,8 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
         const auto loop_end = Clock::now();
         const double loop_ms =
             std::chrono::duration<double, std::milli>(loop_end - loop_start).count();
+        // 板载同步路径同样跳过前 30 帧，再计算平均读相机、预处理、
+        // 推理、后处理、绘制和输出时间，避免启动阶段影响稳态 FPS。
         if (processed > kCameraWarmupFrames) {
             if (!profile_started) {
                 profile_started = true;
@@ -1749,7 +1836,8 @@ int run_camera(const AppOptions& options, Yolo11Detector& detector,
 
 }  // namespace
 
-// 模型对象先于检测器创建，并在所有输出批次退出作用域后销毁 RKNN context。
+// 应用层拥有模型 context，并把引用交给检测器；所有 run_* 返回后检测器
+// 先析构，模型再析构。每次 detect 内部的 RknnOutputBatch 更早释放输出 buf。
 int run_application(const AppOptions& options)
 {
     validate_options(options);
@@ -1764,6 +1852,8 @@ int run_application(const AppOptions& options)
         log_info("TCP server listening on port " + std::to_string(tcp_server->port()));
     }
 
+    // 网络输入强制走 smooth 模式；显式 smooth_preview 的板载相机也走
+    // 同一路径。普通板载相机使用同步循环；文件输入先试图片，再试视频。
     if (options.input_mode != InputMode::File) {
 #if EDGEVISION_WITH_VIDEO
         if (options.input_mode == InputMode::NetworkCamera || options.smooth_preview) {
